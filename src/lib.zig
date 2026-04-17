@@ -10,6 +10,17 @@
 
 const std = @import("std");
 
+// Sub-modules — re-exported so that external consumers can reach them
+// via `@import("elf2sbpf").Number` etc.
+pub const Number = @import("common/number.zig").Number;
+pub const Register = @import("common/register.zig").Register;
+
+// Make sub-module tests runnable via `zig build test`.
+test {
+    _ = @import("common/number.zig");
+    _ = @import("common/register.zig");
+}
+
 /// Error set returned by any entry point that can fail because of input data
 /// (as opposed to internal bugs). Mirrors 03-technical-spec.md §1.3.
 pub const LinkError = error{

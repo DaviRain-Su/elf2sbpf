@@ -105,24 +105,33 @@ pub const LinkError = error{
 pub const Number = union(enum) {
     Int: i64,
     Addr: i64,
-    Hex: i64,
 
-    pub fn asI64(self: Number) i64 { ... }
-    pub fn asU64(self: Number) u64 { ... }
+    pub fn toI64(self: Number) i64;
+    pub fn toI16(self: Number) i16;
 };
 ```
 
 对应 Rust `sbpf-common::inst_param::Number`
-（源：`sbpf/crates/common/src/inst_param.rs`）。
+（源：`sbpf/crates/common/src/inst_param.rs` line 17-21）。
+
+**只有两个变体**——Int 和 Addr。语义差别：Addr 参与算术时"吸收"
+Int（Addr + Int = Addr），Int + Int 才产出 Int。C1 MVP 不需要
+arithmetic ops（byteparser/emit 只做构造和值读取），所以 Zig 版**先
+不实现** +/-/\*//，Epic D.x 按需再补。
 
 #### `Register`
 
 ```zig
-pub const Register = struct { n: u4 };
+pub const Register = struct { n: u8 };
 ```
 
-取值范围 0..10（BPF 有 11 个寄存器 r0..r10）。字段 `n` 使用 u4 自
-然约束上限 15，运行时用 `assert(n <= 10)`。
+对应 Rust `sbpf-common::inst_param::Register`
+（源：`sbpf/crates/common/src/inst_param.rs` line 7-9）。
+
+- `n: u8`（**不是** u4——跟 Rust 保持一致）
+- 合法值 0..10（BPF 有 11 个寄存器 r0..r10），但 Rust 没 runtime
+  约束，我们也不加
+- Display 格式为 `r{n}`，如 `r0`、`r10`
 
 #### `Opcode`
 

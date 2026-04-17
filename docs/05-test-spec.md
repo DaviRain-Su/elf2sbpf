@@ -126,18 +126,19 @@ src/
 
 | 测试 | 类型 | 说明 |
 |------|------|------|
-| `Number.Int(5).asI64()` 返回 5 | L1 | 基础访问 |
-| `Number.Addr(-1).asI64()` 返回 -1 | L1 | 负数 |
-| `Number.Hex(0xff).asU64()` 返回 255 | L1 | Hex 变体 |
-| Round-trip：Int → asI64 → Int 相等 | L1 | |
+| `Number{.Int = 5}.toI64()` 返回 5 | L1 | 基础访问 |
+| `Number{.Addr = -1}.toI64()` 返回 -1 | L1 | 负数 |
+| `Number{.Int = 0x7fff}.toI16()` 返回 0x7fff | L1 | toI16 截断上界 |
+| `Number{.Int = 0x10000}.toI16()` 返回 0（截断低 16 位的 ``@truncate``语义）| L1 | 截断行为需跟 Rust `as i16` 匹配 |
+| Round-trip：`Number{.Int = v}` → `toI64()` → `Number{.Int = v}` 字段相等 | L1 | |
 
 ### 4.2 `common/register.zig`
 
 | 测试 | 类型 | 说明 |
 |------|------|------|
-| `Register { n: 0 }` 构造 | L1 | |
-| `Register { n: 10 }` 构造 | L1 | r10 合法 |
-| `Register { n: 11 }` 触发 assert | L1 | runtime 约束 |
+| `Register{.n = 0}` 构造 + `.n == 0` | L1 | 基础 |
+| `Register{.n = 10}` 合法（r10） | L1 | |
+| 格式化 `Register{.n = 3}` 为 `"r3"` | L1 | `std.fmt.format` 友好输出 |
 
 ### 4.3 `common/opcode.zig`
 

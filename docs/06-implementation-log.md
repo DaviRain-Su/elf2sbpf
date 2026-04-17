@@ -137,3 +137,140 @@ $ ls -la zig-out/bin/elf2sbpf
 推迟到对应 Epic 开工时做，避免建空目录被 git 忽略。
 
 **B.1** `common/number.zig`——下一个实质性 Epic 的第一个任务。
+
+---
+
+## C1-B.1 — Number 类型
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 开工读的规格
+
+- `03-technical-spec.md §2.1`（Number 结构）
+- `05-test-spec.md §4.1`（Number 测试矩阵）
+- Rust 源：`/tmp/sbpf-probe/crates/common/src/inst_param.rs` L17-37
+
+### 规格修订（先改规格再动代码）
+
+**发现**：Phase 3 §2.1 和 Phase 5 §4.1 写的 `Number` 有 **3 个变体**
+（Int/Addr/Hex）+ `asU64()` 方法。但真实 Rust 源**只有 2 个变体**
+（Int/Addr）且方法是 `to_i64()` / `to_i16()`。
+
+**原因**：起草 Phase 3 时是凭印象写的，没对着 Rust 源查。
+
+**处理**：**先改 Phase 3 + Phase 5 规格**，再写 Zig 实现。保证代码
+和 spec 一致。
+
+- Phase 3 §2.1 → 删除 Hex 变体，方法改名 `toI64` / `toI16`
+- Phase 5 §4.1 → 测试矩阵改掉 `.Hex` / `asU64` 相关 case，
+  加 toI16 截断语义测试
+
+### 做的事
+
+1. 建目录 `src/common/`
+2. **TDD：先写测试**（7 个）：
+   - `Int.toI64` 正值
+   - `Addr.toI64` 负值
+   - `toI16` 上界 0x7fff
+   - `toI16` 截断 0x10000 → 0
+   - `toI16` 负数 wrap (-1 → 0xffff → -1)
+   - Round-trip
+   - 变体区分（Int(5) != Addr(5)）
+3. **写实现**：
+   - `Number = union(enum) { Int: i64, Addr: i64 }`
+   - `toI64` 用 `switch` 穷尽匹配
+   - `toI16` 用 `@bitCast(@truncate(@bitCast))` 链实现 Rust `as i16`
+     语义（wrap 不 clamp）
+4. 在 `lib.zig` re-export + `test {}` 聚合块
+
+### 遇到的问题
+
+**问题**：Zig 没有 Rust 的 `as` cast 语义。`@intCast` 溢出会 panic，
+`@truncate` 只能 unsigned→smaller。
+
+**解决**：三层组合
+```zig
+@bitCast(@as(u16, @truncate(@as(u64, @bitCast(i64_value)))))
+```
+i64 → u64（bitcast） → u16（truncate） → i16（bitcast）。
+跟 Rust `val as i16` 字节级一致。
+
+### 规格修订（已改）
+
+- [x] Phase 3 §2.1 — Number 变体从 3 个改 2 个
+- [x] Phase 5 §4.1 — 测试矩阵对齐
+
+### 验收
+
+- [x] 7/7 Number 测试通过
+- [x] `zig build test --summary all` 全绿
+- [x] 代码跟 Phase 3 §2.1 一致（含规格修订）
+
+---
+
+## C1-B.2 — Register 类型
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 开工读的规格
+
+- `03-technical-spec.md §2.1`（Register 结构）
+- `05-test-spec.md §4.2`（Register 测试矩阵）
+- Rust 源：`/tmp/sbpf-probe/crates/common/src/inst_param.rs` L7-15
+
+### 规格修订
+
+**发现**：Phase 3 §2.1 写 `Register.n` 是 `u4`，Rust 源是 `u8`。
+
+**处理**：**先改 Phase 3 + Phase 5**，让它们跟 Rust 保持一致。u8
+更宽松，不依赖"runtime assert" 保护（跟 Rust 一样）。
+
+### 做的事
+
+1. **TDD：先写测试**（4 个）：
+   - `n=0` 构造
+   - `n=10` 构造
+   - `format` 单数字 → `r3`
+   - `format` 双数字 → `r10`
+2. **写实现**：
+   - `Register = struct { n: u8 }`
+   - `format` 方法使用 Zig 0.16 新签名
+     `pub fn format(self, writer: *std.Io.Writer) std.Io.Writer.Error!void`
+   - Writer 的 `print("{f}", .{x})` 识别 `format` 方法
+3. `lib.zig` re-export
+
+### 遇到的问题
+
+**问题**：Zig 0.16 的 writer API 跟 0.15 不同（"Writergate"）。
+initial try 用了 `std.io.FixedBufferStream` / `writer()` 旧链，要
+改成 `std.Io.Writer.fixed(&buf)`。
+
+**解决**：按 0.16 的签名：
+```zig
+var buf: [8]u8 = undefined;
+var fbs = std.Io.Writer.fixed(&buf);
+try fbs.print("{f}", .{reg});
+const output = fbs.buffered();  // 返回已写入的切片
+```
+
+教训：Zig 0.16 的 `std.Io.Writer` 需要全局留意，未来 `emit/` 阶段
+写 ELF 字节时会大量用到。在别处出现类似问题先查 writer API。
+
+### 规格修订（已改）
+
+- [x] Phase 3 §2.1 — Register.n u4 → u8
+- [x] Phase 5 §4.2 — 测试矩阵加 format 测试；删除"触发 assert"测试
+  （Rust 没这个行为）
+
+### 验收
+
+- [x] 4/4 Register 测试通过
+- [x] `zig build test --summary all`：15/15 全绿（含前面 11 个）
+
+### 下一任务
+
+**B.3** `common/opcode.zig` —— Opcode enum + 辅助函数（**大任务**，
+约 500 个 variant，Rust 源 1120 行）。
+

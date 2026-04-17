@@ -106,14 +106,19 @@ test` 跑空测试。
 
 ### 任务
 
-- [ ] **B.1**：`common/number.zig`
-  - 对应 Rust `inst_param::Number`：`Int(i64)` | `Addr(i64)` | `Hex(i64)`
-  - Zig 用 tagged union 实现
-  - **验收**：单测覆盖构造、比较、格式化
+- [x] **B.1**：`common/number.zig` ✅ 2026-04-18
+  - 对应 Rust `inst_param::Number`：`Int(i64)` | `Addr(i64)`（**无 Hex** —— 原 spec 错）
+  - Zig tagged union，有 `toI64()` 和 `toI16()`
+  - **验收**：7 个单测全绿（构造、toI64、toI16 截断、变体区分）
+  - **规格修订**：Phase 3 §2.1 删掉 Hex 变体；Phase 5 §4.1 更新测试矩阵
+  - **实现日志**：`06-implementation-log.md` § C1-B.1
 
-- [ ] **B.2**：`common/register.zig`
-  - 对应 `inst_param::Register`：`struct { n: u4 }`
-  - **验收**：单测覆盖 0-10 号寄存器的表示
+- [x] **B.2**：`common/register.zig` ✅ 2026-04-18
+  - 对应 `inst_param::Register`：`struct { n: u8 }`（**不是 u4** —— 原 spec 错）
+  - Zig 0.16 `std.Io.Writer`-based format，输出 `r{n}`
+  - **验收**：4 个单测全绿（构造、格式化 `r3` / `r10`）
+  - **规格修订**：Phase 3 §2.1 改 u4→u8；Phase 5 §4.2 更新测试
+  - **实现日志**：`06-implementation-log.md` § C1-B.2
 
 - [ ] **B.3**：`common/opcode.zig` — Opcode enum
   - Port Rust `opcode.rs` 的 Opcode enum（约 500 个变体）
@@ -518,7 +523,7 @@ Solana SBPF 特有结构。
 | Epic | 任务数 | 已完成 | 状态 |
 |------|--------|--------|------|
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
-| B — 通用数据类型 | 10 | 0 | 未开始 |
+| B — 通用数据类型 | 10 | 2 | 进行中 (20%) |
 | C — ELF 读取层 | 5 | 0 | 未开始 |
 | D — Byteparser | 9 | 0 | 未开始 |
 | E — AST | 4 | 0 | 未开始 |
@@ -526,7 +531,7 @@ Solana SBPF 特有结构。
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **3** | **5%** |
+| **总计** | **56** | **5** | **9%** |
 
 ---
 
