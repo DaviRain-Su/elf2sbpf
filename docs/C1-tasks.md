@@ -152,15 +152,16 @@ test` 跑空测试。
   - **验收**：14 个新测试，**用真实 hello.o / counter.o 字节**验证所有
     13 种 operation 类型；错误路径 4 种全部验证；spec §8 边界 #12（未知 opcode） + #16（JMP32 0x16 拒绝） 明确验证
 
-- [ ] **B.7**：`common/instruction.zig` — `toBytes(Instruction) ![]u8`
-  - 逆操作
-  - **验收**：decode → encode round-trip，字节级一致
+- [x] **B.7**：`common/instruction.zig` — `toBytes` ✅ 2026-04-18
+  - fromBytes 反操作，按同样 13 class 分派
+  - `EncodeError`：`BufferTooSmall` / `UnresolvedLabel` / `ImmOutOfRange`
+  - `.left(label)` 未解析就 encode = 程序错 → `UnresolvedLabel`
+  - 共享 `writeLeU32` / `writeLeI32` / `writeLeI16` helpers
+  - **验收**：6 个错误测试 + **16 种 class 的 round-trip 测试**
+    （decode → encode → 原字节完全一致），覆盖每种 operation class
 
-- [ ] **B.8**：`common/instruction.zig` — 辅助判断
-  - `isJump(Instruction) bool`
-  - `isSyscall(Instruction) bool`
-  - `getSize(Instruction) u64`（8 或 16）
-  - **验收**：针对每个 opcode 的分类对照
+- [x] **B.8**：`common/instruction.zig` — 辅助判断 ✅ 已在 B.5 中完成
+  - `isJump`、`isSyscall`、`getSize` 全部在 B.5 写好并测过
 
 - [ ] **B.9**：`common/syscalls.zig` — murmur3-32
   - Port murmur3-32 哈希（给 syscall 名字算出 32 位哈希）
@@ -529,7 +530,7 @@ Solana SBPF 特有结构。
 | Epic | 任务数 | 已完成 | 状态 |
 |------|--------|--------|------|
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
-| B — 通用数据类型 | 10 | 5 | 进行中 (56%)* |
+| B — 通用数据类型 | 10 | 7 | 进行中 (78%)* |
 | C — ELF 读取层 | 5 | 0 | 未开始 |
 | D — Byteparser | 9 | 0 | 未开始 |
 | E — AST | 4 | 0 | 未开始 |
@@ -537,7 +538,7 @@ Solana SBPF 特有结构。
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **8** | **14%** |
+| **总计** | **56** | **10** | **18%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

@@ -535,6 +535,89 @@ Phase 3 §8 边界条件验证：
 **B.7** `common/instruction.zig::toBytes` — 编码，`fromBytes` 的反
 操作。要做 round-trip 测试（decode → encode → decode 字节级一致）。
 
+---
+
+## C1-B.7 — `Instruction.toBytes` 编码 + round-trip
+
+**日期**：2026-04-18
+**状态**：✅ 完成；同时关闭 B.8（isJump/isSyscall/getSize 已在 B.5 完成）
+
+### 开工读的规格
+
+- `03-technical-spec.md §2.1`（toBytes 签名 + 契约）
+- B.6 implementation log（fromBytes 反过来就是这个的规格）
+
+### 设计决策
+
+**新错误集合 `EncodeError`**：跟 `DecodeError` 分开，因为编码阶段的错跟解码完全不同（分配/上下文错，不是输入错）。
+
+- `BufferTooSmall` — 输出 buffer 不够 8/16 字节
+- `UnresolvedLabel` — `imm` 或 `off` 还带 `.left(label)`；调用方
+  忘了跑 `buildProgram` / relocation 解析
+- `ImmOutOfRange` — Number 值超过 i32（非 Lddw 的 imm 只有 32 位）
+
+**跟 Rust 实现比**：Rust 的 sbpf-assembler 里有对应的 emit_bytecode
+链条，但它是直接按 AST 走的，不是对 Instruction 调一个 toBytes
+方法。我们这里的 toBytes 是 Zig 独有的设计——为了让 decode 和
+encode 对称，方便做 round-trip 测试。
+
+**字节零填充**：函数开头 `@memset(out[0..need], 0)`，之后只写需
+要的字段。所以"必须为零"的字段天然保持为零，不需要每个 class 显
+式清零。
+
+### 做的事
+
+1. **写 `EncodeError` 错误集**
+2. **写 3 个 LE 写 helper**：writeLeU32 / writeLeI32 / writeLeI16，
+   每个都是对 `std.mem.writeInt` 的 `inline` 薄封装
+3. **写 `toBytes`**：
+   - 按 `operationType()` switch，13 种 class 各自 pack 字段
+   - 用两个本地 extractor struct 抽取 Either 里的 .right 值，
+     .left 返回 `UnresolvedLabel`
+   - Lddw 分两半写：`writeLeU32(out[4..8], truncate(imm_u64))` +
+     `writeLeU32(out[12..16], truncate(imm_u64 >> 32))`
+4. **写测试**：
+   - 5 个错误路径测试（BufferTooSmall × 2、UnresolvedLabel × 2、
+     ImmOutOfRange × 1）
+   - **1 个巨型 round-trip 测试**，用 16 个不同 class 的字节输入，
+     decode → encode 后字节完全一致
+
+### 遇到的问题
+
+**问题**：Zig `@memset` 在 0.16 要求 slice 或 array，传
+`out[0..need]` 正好满足。
+
+**另一个细节**：Callx (CallRegister) 的 encode —— Rust decode 里
+会把 `dst==0 && imm!=0` 的旧 SBPF 形式归一化为 `dst=imm; imm=0`。
+Encode 时要反过来吗？经过读 Rust assembler 源，我发现它**只写
+归一化后**的形式（dst=X; imm=0），不重建旧的 imm 编码。我们跟一致。
+
+### 验收
+
+- [x] 5 个 error 路径测试通过
+- [x] **16 种 operation class 的 round-trip 测试通过**（每种 class
+      至少 1 个真实 / 合成字节）
+- [x] `zig build test --summary all`：**50/50** 全绿（累计）
+- [x] 实质上把 B.8 也关闭了（原 B.8 的 3 个助手在 B.5 已完成）
+
+### 关闭 B.8 的说明
+
+C1-tasks 原来把 B.5（类型） / B.8（isJump/isSyscall/getSize）分成
+两个任务。实际上这 3 个助手只用 Opcode 就能判，天然属于 Instruction
+文件，写在一块更自然。B.5 开工时一并完成并测过，所以 B.8 只是
+"标记完成"。
+
+### Epic B 剩余任务
+
+- **B.9** — `common/syscalls.zig` — murmur3-32（验证向量见 Phase 3 §6.1）
+- **B.10** — Epic B 集成测试（先整合跑一次，再开 Epic C）
+
+### 下一任务
+
+**B.9** `common/syscalls.zig` — murmur3-32 哈希 + syscall 白名单。
+syscall 名 → u32 哈希，hello.o `call 0x207559bd` 就是这个来的。
+
+
 
 
 

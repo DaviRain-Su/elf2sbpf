@@ -21,6 +21,27 @@ pub const DecodeError = error{
     InvalidSrcRegister, // Call imm's src must be 0 or 1
 };
 
+pub const EncodeError = error{
+    BufferTooSmall,
+    UnresolvedLabel,    // imm or off still carries an Either.left — caller must
+                        // resolve it (via buildProgram) before encoding.
+    ImmOutOfRange,      // Number value doesn't fit the encoded field width
+};
+
+// --- little-endian write helpers ---
+
+inline fn writeLeU32(buf: *[4]u8, v: u32) void {
+    std.mem.writeInt(u32, buf, v, .little);
+}
+
+inline fn writeLeI32(buf: *[4]u8, v: i32) void {
+    std.mem.writeInt(i32, buf, v, .little);
+}
+
+inline fn writeLeI16(buf: *[2]u8, v: i16) void {
+    std.mem.writeInt(i16, buf, v, .little);
+}
+
 /// Byte range into the original source — used for error reporting. The name
 /// mirrors Rust's `Range<usize>` in sbpf-common; we use a named struct so
 /// that `.start` / `.end` are self-documenting.
@@ -278,13 +299,143 @@ pub const Instruction = struct {
         return inst;
     }
 
-    /// Encode an Instruction into bytes.
-    /// Writes either 8 or 16 bytes into `out` depending on opcode.
-    /// Not yet implemented — B.7.
-    pub fn toBytes(self: Instruction, out: []u8) !void {
-        _ = self;
-        _ = out;
-        @panic("Instruction.toBytes not implemented yet (task B.7)");
+    /// Encode an Instruction into bytes. Inverse of `fromBytes`.
+    /// Writes exactly `self.getSize()` bytes into `out`.
+    ///
+    /// Requires that all operand fields that are present hold resolved
+    /// (.right) values — any remaining .left(label) means the caller forgot
+    /// to run buildProgram / relocation resolution and is a programmer bug.
+    pub fn toBytes(self: Instruction, out: []u8) EncodeError!void {
+        const need = self.getSize();
+        if (out.len < need) return EncodeError.BufferTooSmall;
+
+        // Zero the target buffer so any "must be zero" field is handled
+        // implicitly by not writing to it.
+        @memset(out[0..need], 0);
+
+        out[0] = self.opcode.toByte();
+
+        const dst_nibble: u8 = if (self.dst) |r| (r.n & 0x0f) else 0;
+        const src_nibble: u8 = if (self.src) |r| (r.n & 0x0f) else 0;
+
+        // Shared helpers to pack off / imm honouring the Either constraint.
+        const OffExtractor = struct {
+            fn resolved(field: ?Either([]const u8, i16)) EncodeError!?i16 {
+                if (field) |e| switch (e) {
+                    .left => return EncodeError.UnresolvedLabel,
+                    .right => |v| return v,
+                };
+                return null;
+            }
+        };
+        const ImmExtractor = struct {
+            fn resolvedI32(field: ?Either([]const u8, Number)) EncodeError!?i32 {
+                if (field) |e| switch (e) {
+                    .left => return EncodeError.UnresolvedLabel,
+                    .right => |n| {
+                        const v = n.toI64();
+                        if (v < std.math.minInt(i32) or v > std.math.maxInt(i32)) {
+                            return EncodeError.ImmOutOfRange;
+                        }
+                        return @intCast(v);
+                    },
+                };
+                return null;
+            }
+            fn resolvedI64(field: ?Either([]const u8, Number)) EncodeError!?i64 {
+                if (field) |e| switch (e) {
+                    .left => return EncodeError.UnresolvedLabel,
+                    .right => |n| return n.toI64(),
+                };
+                return null;
+            }
+        };
+
+        switch (self.opcode.operationType()) {
+            .LoadImmediate => {
+                // Lddw: 16 bytes. Low 32 bits of imm go to bytes 4..8,
+                // high 32 bits to bytes 12..16 of the second slot.
+                // opcode byte of second slot stays 0 (pseudo-instruction marker).
+                out[1] = dst_nibble;
+                const imm_i64 = (try ImmExtractor.resolvedI64(self.imm)) orelse 0;
+                const imm_u64: u64 = @bitCast(imm_i64);
+                writeLeU32(out[4..8], @truncate(imm_u64));
+                writeLeU32(out[12..16], @truncate(imm_u64 >> 32));
+            },
+
+            .LoadMemory, .StoreRegister => {
+                // dst, src, off.
+                out[1] = (src_nibble << 4) | dst_nibble;
+                const off = (try OffExtractor.resolved(self.off)) orelse 0;
+                writeLeI16(out[2..4], off);
+            },
+
+            .StoreImmediate => {
+                // dst, off, imm.
+                out[1] = dst_nibble;
+                const off = (try OffExtractor.resolved(self.off)) orelse 0;
+                writeLeI16(out[2..4], off);
+                const imm = (try ImmExtractor.resolvedI32(self.imm)) orelse 0;
+                writeLeI32(out[4..8], imm);
+            },
+
+            .BinaryImmediate => {
+                // dst, imm.
+                out[1] = dst_nibble;
+                const imm = (try ImmExtractor.resolvedI32(self.imm)) orelse 0;
+                writeLeI32(out[4..8], imm);
+            },
+
+            .BinaryRegister => {
+                // dst, src.
+                out[1] = (src_nibble << 4) | dst_nibble;
+            },
+
+            .Unary => {
+                out[1] = dst_nibble;
+            },
+
+            .Jump => {
+                // off only.
+                const off = (try OffExtractor.resolved(self.off)) orelse 0;
+                writeLeI16(out[2..4], off);
+            },
+
+            .JumpImmediate => {
+                // dst, off, imm.
+                out[1] = dst_nibble;
+                const off = (try OffExtractor.resolved(self.off)) orelse 0;
+                writeLeI16(out[2..4], off);
+                const imm = (try ImmExtractor.resolvedI32(self.imm)) orelse 0;
+                writeLeI32(out[4..8], imm);
+            },
+
+            .JumpRegister => {
+                // dst, src, off.
+                out[1] = (src_nibble << 4) | dst_nibble;
+                const off = (try OffExtractor.resolved(self.off)) orelse 0;
+                writeLeI16(out[2..4], off);
+            },
+
+            .CallImmediate => {
+                // src (0 or 1), imm. dst and off implicit 0.
+                out[1] = src_nibble << 4;
+                const imm = (try ImmExtractor.resolvedI32(self.imm)) orelse 0;
+                writeLeI32(out[4..8], imm);
+            },
+
+            .CallRegister => {
+                // Callx: we always emit the normalized dst-in-dst form
+                // (out[1] = dst_nibble) per Solana/blueshift convention.
+                // Rust's reverse encoding also writes dst to the regs byte
+                // and leaves imm = 0.
+                out[1] = dst_nibble;
+            },
+
+            .Exit => {
+                // All fields zero; just the opcode byte matters.
+            },
+        }
     }
 };
 
@@ -546,4 +697,95 @@ test "fromBytes rejects Call with src not in {0, 1}" {
 test "fromBytes rejects Lddw with < 16 bytes" {
     const bytes = [_]u8{ 0x18, 0x00, 0, 0, 0, 0, 0, 0 }; // only 8 bytes
     try std.testing.expectError(DecodeError.TooShort, Instruction.fromBytes(&bytes));
+}
+
+// --- toBytes tests (encoding) + round-trip ---
+
+test "toBytes errors on undersized buffer" {
+    const inst = Instruction{
+        .opcode = .Exit,
+        .dst = null, .src = null, .off = null, .imm = null,
+        .span = .{ .start = 0, .end = 8 },
+    };
+    var tiny: [7]u8 = undefined;
+    try std.testing.expectError(EncodeError.BufferTooSmall, inst.toBytes(&tiny));
+}
+
+test "toBytes errors on undersized buffer for Lddw (needs 16)" {
+    const inst = Instruction{
+        .opcode = .Lddw,
+        .dst = .{ .n = 1 }, .src = null, .off = null,
+        .imm = .{ .right = .{ .Int = 0 } },
+        .span = .{ .start = 0, .end = 16 },
+    };
+    var small: [8]u8 = undefined;
+    try std.testing.expectError(EncodeError.BufferTooSmall, inst.toBytes(&small));
+}
+
+test "toBytes errors on unresolved label in imm" {
+    const inst = Instruction{
+        .opcode = .Call,
+        .dst = null, .src = .{ .n = 0 }, .off = null,
+        .imm = .{ .left = "sol_log_" }, // unresolved!
+        .span = .{ .start = 0, .end = 8 },
+    };
+    var buf: [8]u8 = undefined;
+    try std.testing.expectError(EncodeError.UnresolvedLabel, inst.toBytes(&buf));
+}
+
+test "toBytes errors on unresolved label in off" {
+    const inst = Instruction{
+        .opcode = .JeqImm,
+        .dst = .{ .n = 1 }, .src = null,
+        .off = .{ .left = "target" }, // unresolved jump target
+        .imm = .{ .right = .{ .Int = 0 } },
+        .span = .{ .start = 0, .end = 8 },
+    };
+    var buf: [8]u8 = undefined;
+    try std.testing.expectError(EncodeError.UnresolvedLabel, inst.toBytes(&buf));
+}
+
+test "toBytes errors when imm doesn't fit i32 (non-Lddw)" {
+    const inst = Instruction{
+        .opcode = .Add64Imm,
+        .dst = .{ .n = 0 }, .src = null, .off = null,
+        .imm = .{ .right = .{ .Int = (1 << 33) } }, // > i32 max
+        .span = .{ .start = 0, .end = 8 },
+    };
+    var buf: [8]u8 = undefined;
+    try std.testing.expectError(EncodeError.ImmOutOfRange, inst.toBytes(&buf));
+}
+
+// Round-trip: decode → encode → bytes equal to original, for every class.
+// This is the strongest correctness guarantee we can do at this layer.
+const RoundTripCase = struct { name: []const u8, bytes: []const u8 };
+const round_trip_cases = [_]RoundTripCase{
+    .{ .name = "Ldxdw (LoadMemory, hello.o[0])", .bytes = &[_]u8{ 0x79, 0x11, 0, 0, 0, 0, 0, 0 } },
+    .{ .name = "JeqImm with off=0 (hello.o[1])", .bytes = &[_]u8{ 0x15, 0x01, 0, 0, 0, 0, 0, 0 } },
+    .{ .name = "Lddw r1, 0x123456789abcdef0", .bytes = &[_]u8{
+        0x18, 0x01, 0, 0, 0xf0, 0xde, 0xbc, 0x9a,
+        0x00, 0x00, 0, 0, 0x78, 0x56, 0x34, 0x12,
+    } },
+    .{ .name = "Mov64Imm r2=0x16 (hello.o[3])", .bytes = &[_]u8{ 0xb7, 0x02, 0, 0, 0x16, 0, 0, 0 } },
+    .{ .name = "Call 0x207559bd (hello.o[4])", .bytes = &[_]u8{ 0x85, 0x00, 0, 0, 0xbd, 0x59, 0x75, 0x20 } },
+    .{ .name = "Mov64Imm r0=0 (hello.o[5])", .bytes = &[_]u8{ 0xb7, 0x00, 0, 0, 0, 0, 0, 0 } },
+    .{ .name = "Exit (hello.o[6])", .bytes = &[_]u8{ 0x95, 0, 0, 0, 0, 0, 0, 0 } },
+    .{ .name = "Mov64Reg r6=r1 (counter.o[0])", .bytes = &[_]u8{ 0xbf, 0x16, 0, 0, 0, 0, 0, 0 } },
+    .{ .name = "JneImm with off=-8", .bytes = &[_]u8{ 0x55, 0x01, 0xf8, 0xff, 0, 0, 0, 0 } },
+    .{ .name = "Ja +3 (Jump only)", .bytes = &[_]u8{ 0x05, 0x00, 0x03, 0x00, 0, 0, 0, 0 } },
+    .{ .name = "Add64Reg r1, r2 (BinaryRegister)", .bytes = &[_]u8{ 0x0f, 0x21, 0, 0, 0, 0, 0, 0 } },
+    .{ .name = "Add64Imm r3, 42 (BinaryImmediate)", .bytes = &[_]u8{ 0x07, 0x03, 0, 0, 42, 0, 0, 0 } },
+    .{ .name = "Stxdw [r10-8] = r1 (StoreRegister)", .bytes = &[_]u8{ 0x7b, 0x1a, 0xf8, 0xff, 0, 0, 0, 0 } },
+    .{ .name = "Stdw [r10] = 99 (StoreImmediate)", .bytes = &[_]u8{ 0x7a, 0x0a, 0x00, 0x00, 99, 0, 0, 0 } },
+    .{ .name = "Neg64 r5 (Unary)", .bytes = &[_]u8{ 0x87, 0x05, 0, 0, 0, 0, 0, 0 } },
+    .{ .name = "JsetReg r1, r2, off=5 (JumpRegister)", .bytes = &[_]u8{ 0x4d, 0x21, 0x05, 0x00, 0, 0, 0, 0 } },
+};
+
+test "round-trip: decode → encode produces identical bytes" {
+    var buf: [16]u8 = undefined;
+    inline for (round_trip_cases) |tc| {
+        const inst = try Instruction.fromBytes(tc.bytes);
+        try inst.toBytes(buf[0..inst.getSize()]);
+        try std.testing.expectEqualSlices(u8, tc.bytes, buf[0..tc.bytes.len]);
+    }
 }
