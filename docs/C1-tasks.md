@@ -163,11 +163,15 @@ test` 跑空测试。
 - [x] **B.8**：`common/instruction.zig` — 辅助判断 ✅ 已在 B.5 中完成
   - `isJump`、`isSyscall`、`getSize` 全部在 B.5 写好并测过
 
-- [ ] **B.9**：`common/syscalls.zig` — murmur3-32
-  - Port murmur3-32 哈希（给 syscall 名字算出 32 位哈希）
-  - **关键**：字节级必须跟 Rust `syscall-map` crate 一致
-  - **验收**：对 `sol_log_`、`sol_log_64_`、`sol_memcpy_` 等常用
-    syscall 算出的哈希跟 Rust 版一致
+- [x] **B.9**：`common/syscalls.zig` — murmur3-32 ✅ 2026-04-18
+  - Port Rust `sbpf-syscall-map::hash::murmur3_32`（~45 行算法）
+  - 常量表 9 个，都跟 spec §7.7 对齐
+  - Tail padding 是高位补零（**不是**按字节反序拼），修了 spec §6.1 的伪代码错
+  - **字节级跟 Rust 一致**：对 `sol_log_` / `sol_log_64_` / `sol_log_pubkey` /
+    `sol_memcpy_` / `sol_invoke_signed_c` 5 个 Solana syscall 都跑出正确 hash
+  - **规格修订**：Phase 3 §6.1（tail padding）+ Phase 5 §4.5（sol_log_64_
+    的期望值原来写错了，实测应是 0x5c2a3178 而不是 0xbf7188f6）
+  - **验收**：9 个单测全绿，含空串、5 个 syscall、tail 长度覆盖 0-3 + 4 + 5 + 8
 
 - [ ] **B.10**：B.1-B.9 全部集成单测
   - 用 sbpf-common 的 Rust 单测作为对照表（抄过来改成 Zig）
@@ -530,7 +534,7 @@ Solana SBPF 特有结构。
 | Epic | 任务数 | 已完成 | 状态 |
 |------|--------|--------|------|
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
-| B — 通用数据类型 | 10 | 7 | 进行中 (78%)* |
+| B — 通用数据类型 | 10 | 8 | 进行中 (89%)* |
 | C — ELF 读取层 | 5 | 0 | 未开始 |
 | D — Byteparser | 9 | 0 | 未开始 |
 | E — AST | 4 | 0 | 未开始 |
@@ -538,7 +542,7 @@ Solana SBPF 特有结构。
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **10** | **18%** |
+| **总计** | **56** | **11** | **20%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

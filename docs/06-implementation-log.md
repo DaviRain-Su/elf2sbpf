@@ -617,6 +617,106 @@ C1-tasks 原来把 B.5（类型） / B.8（isJump/isSyscall/getSize）分成
 **B.9** `common/syscalls.zig` — murmur3-32 哈希 + syscall 白名单。
 syscall 名 → u32 哈希，hello.o `call 0x207559bd` 就是这个来的。
 
+---
+
+## C1-B.9 — `syscalls.zig` murmur3-32
+
+**日期**：2026-04-18
+**状态**：✅ 完成（白名单等到 byteparser 阶段再说）
+
+### 开工读的规格
+
+- `03-technical-spec.md §6.1` — murmur3-32 伪代码
+- `03-technical-spec.md §7.7` — 常量表
+- `05-test-spec.md §4.5` — 验证向量
+- Rust 源：`sbpf/crates/sbpf-syscall-map/src/hash.rs`（45 行）
+
+### 规格修订 1：Tail padding 方向
+
+**发现**：Phase 3 §6.1 的伪代码写的是"tail: for each byte in reverse: k <<= 8; k |= byte"
+这个是大端序拼字节。
+
+**Rust 实际**：用 zero-pad 高位 + 同一个 pre_mix（从 4 字节小端读 u32）：
+```rust
+1 => pre_mix([buf[i * 4], 0, 0, 0]);
+2 => pre_mix([buf[i * 4], buf[i * 4 + 1], 0, 0]);
+3 => pre_mix([buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2], 0]);
+```
+
+**修规格**：Phase 3 §6.1 tail 部分重写，明确"高位补零 + 同 pre_mix"。
+
+### 规格修订 2：验证向量的预期值
+
+**发现**：Phase 5 §4.5 里 `sol_log_64_` 的预期 hash `0xbf7188f6` 是
+错的。实际应该是 `0x5c2a3178`。我最初起草 Phase 5 时这个值不是实测
+来的，是想当然写的。
+
+**修规格**：
+- 用 `/tmp/murmur-verify/`（调 Rust `sbpf-syscall-map` 作依赖）跑
+  出真实 hash 值
+- Phase 3 §6.1 / Phase 5 §4.5 都更新
+- 注意还加了 `""` → `0x00000000` 作为边界 case
+
+### 做的事
+
+1. **常量集中在文件顶部**：C1/C2/R1/R2/M/N/F1/F2 + 一个 `preMix` inline helper
+
+2. **TDD：先写 9 个测试**：
+   - 确定性（同一输入多次调用一致）
+   - 区分不同输入（abort vs sol_log_）
+   - **5 个 Solana syscall 验证向量**（每个都写 expected u32）
+   - 空串 → 0
+   - Tail 长度 0/1/2/3 + 4 + 5 + 8（覆盖所有 tail path）
+
+3. **写 murmur3_32**：
+   - Body：每 4 字节做 preMix → XOR hash → rotl 13 → \*5 +% N
+   - Tail：`[4]u8` 初始化为 0，copy 剩下 1-3 字节到前面，调 preMix → XOR hash
+   - Finalization：`hash ^= len`，然后 avalanche：`hash ^= hash>>16; hash *%= F1; ...`
+
+### 遇到的问题
+
+**问题 1：Zig shift 要求无符号指数**
+
+```zig
+hash = std.math.rotl(u32, hash, 15);  // 15 is comptime_int, auto-coerces to u5
+```
+
+常量 `R1 = 15` 要声明成 `u5`（因为 u32 shift 的合法 shift amount 是 0-31）。
+
+**问题 2：看错了 Zig 测试输出**
+
+第一次跑测试失败时，我以为 Zig 给的 `1546269048` 跟 Rust 的
+`0x5c2a3178` 不同。实际上 `1546269048 decimal == 0x5c2a3178 hex`，
+是同一个数。Zig 报错时给的是十进制，我没换算就以为算法错。
+教训：expectEqual 失败先拿 Python 把 expected/actual 都转到同一进制
+再比。
+
+### 验收
+
+- [x] 9 个测试全部通过
+- [x] `sol_log_` 真实 hello.o call 指令里的 hash `0x207559bd` 被正确产出
+- [x] 其余 4 个 Solana syscall hash 跟 Rust 参考对齐
+- [x] `zig build test --summary all`：**59/59** 全绿（累计）
+
+### Epic B 状态
+
+- B.1 Number ✅
+- B.2 Register ✅
+- B.3 Opcode（enum + toStr）✅
+- B.4 原辅助函数（fromSize/toSize/toOperator/is32bit）→ 推迟到 D
+- B.5 Instruction 类型 + 3 个 classifier ✅
+- B.6 fromBytes ✅
+- B.7 toBytes + round-trip ✅
+- B.8 折进 B.5 ✅
+- B.9 murmur3_32 ✅
+- B.10 Epic B 集成 — 下一步
+
+### 下一任务
+
+**B.10** 是 Epic B 的收尾集成 —— 把所有 common/ 模块一起跑一遍，
+确认模块间协作没问题。然后进入 **Epic C（ELF 读取层）**。
+
+
 
 
 

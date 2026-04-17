@@ -649,10 +649,10 @@ body (per 4-byte chunk, little-endian):
   hash = hash * 5 + 0xe6546b64
 
 tail (remaining 1-3 bytes):
-  k = 0
-  for each byte in reverse:
-    k <<= 8
-    k |= byte
+  # Pad on the HIGH end with zeros, then run through pre_mix (same as body's k).
+  # Tail does NOT do the rotate+mul+add step that body does.
+  padded = [buf[i], (buf[i+1] if n>=2 else 0), (buf[i+2] if n>=3 else 0), 0]
+  k = u32.from_le_bytes(padded)
   k *= 0xcc9e2d51
   k = rotate_left(k, 15)
   k *= 0x1b873593
@@ -671,14 +671,16 @@ finalization:
 
 | 输入 | 期望 `u32`（十六进制） |
 |------|----------------------|
+| `""` | `0x00000000` |
 | `sol_log_` | `0x207559bd` |
-| `sol_log_64_` | `0xbf7188f6` |
+| `sol_log_64_` | `0x5c2a3178` |
 | `sol_log_pubkey` | `0x7ef088ca` |
 | `sol_memcpy_` | `0x717cc4a3` |
 | `sol_invoke_signed_c` | `0xa22b9c85` |
 
-（从 zignocchio 产物逆向得到；如果 port 后有一位不对，先查
-rotate_left 方向和 tail 处理顺序）
+（用 `/tmp/murmur-verify/` 对照 Rust `sbpf-syscall-map::murmur3_32`
+跑出来的真值；如果 port 后有一位不对，先查 rotate_left 方向和
+tail padding 是不是高位补零）
 
 ### 6.2 改进版 Rodata Gap-Fill（关键）
 

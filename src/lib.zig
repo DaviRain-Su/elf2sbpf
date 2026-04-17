@@ -21,12 +21,15 @@ pub const Instruction = instruction.Instruction;
 pub const Span = instruction.Span;
 pub const Either = instruction.Either;
 
+pub const murmur3_32 = @import("common/syscalls.zig").murmur3_32;
+
 // Make sub-module tests runnable via `zig build test`.
 test {
     _ = @import("common/number.zig");
     _ = @import("common/register.zig");
     _ = @import("common/opcode.zig");
     _ = @import("common/instruction.zig");
+    _ = @import("common/syscalls.zig");
 }
 
 /// Error set returned by any entry point that can fail because of input data
