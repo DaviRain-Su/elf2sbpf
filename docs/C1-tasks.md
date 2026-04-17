@@ -215,11 +215,14 @@ test` 跑空测试。
   - `SymbolError`：NoSymbolTable / BadStringTable / CorruptSymbolTable / NameOutOfRange
   - **验收**：3 个单测，4-section 合成 ELF 带 3 个 symbol（STN_UNDEF/entrypoint-FUNC-GLOBAL/foo-OBJECT-LOCAL），完整验证迭代、kind/binding/sectionIndex 解析、strtab 名字解析
 
-- [ ] **C.4**：`elf/reloc.zig` — relocation 迭代
-  - `iterRelocations(section)` 返回某 section 里的所有 relocation
-  - 每个有 `offset()` `type()` `target_symbol()`
-  - **验收**：能读 hello.o 的 `.rel.text`，1 个
-    `R_BPF_64_64`，指向 `.rodata.str1.1`
+- [x] **C.4**：`elf/reloc.zig` — relocation 迭代 ✅ 2026-04-18
+  - `Reloc { index, offset, type_raw, symbol_index, addend }`
+  - `RelocType` non-exhaustive enum：BPF_64_64 / BPF_64_ABS64 / BPF_64_ABS32 /
+    BPF_64_NODYLD32 / BPF_64_32 / `_`（未知值保持原 u32）
+  - 同时支持 SHT_REL（addend=null，隐藏在指令 imm 里）和 SHT_RELA（addend 显式）
+  - `ElfFile.iterRelocations(rel_section)` — 用 Section 定位，不是名字
+  - `RelocError`：NotARelocationSection / CorruptRelocationTable / OutOfRange
+  - **验收**：3 个单测，4-section 合成 ELF 带 .rel.text（2 个 entry：BPF_64_64 和 BPF_64_32）+ 非 reloc section 拒绝 + 非穷尽 enum 行为
 
 - [ ] **C.5**：集成测试
   - 写一个简单的 `elf-dump.zig` 命令，用上面几个 API 把 hello.o
@@ -541,14 +544,14 @@ Solana SBPF 特有结构。
 |------|--------|--------|------|
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
-| C — ELF 读取层 | 5 | 3 | 进行中 (60%) |
+| C — ELF 读取层 | 5 | 4 | 进行中 (80%) |
 | D — Byteparser | 9 | 0 | 未开始 |
 | E — AST | 4 | 0 | 未开始 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **14** | **25%** |
+| **总计** | **56** | **15** | **27%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

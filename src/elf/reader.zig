@@ -15,6 +15,7 @@ const std = @import("std");
 const elf = std.elf;
 const section_mod = @import("section.zig");
 const symbol_mod = @import("symbol.zig");
+const reloc_mod = @import("reloc.zig");
 
 pub const ParseError = error{
     /// Bytes too short to contain a 64-byte ELF header.
@@ -151,6 +152,14 @@ pub const ElfFile = struct {
         kind: symbol_mod.SymTableKind,
     ) symbol_mod.SymbolError!symbol_mod.SymbolIter {
         return symbol_mod.makeIter(self, kind);
+    }
+
+    /// Iterator over relocations in the given SHT_REL/SHT_RELA section.
+    pub fn iterRelocations(
+        self: *const ElfFile,
+        rel_section: section_mod.Section,
+    ) reloc_mod.RelocError!reloc_mod.RelocIter {
+        return reloc_mod.makeIter(self, rel_section);
     }
 };
 

@@ -32,6 +32,10 @@ pub const SymbolKind = symbol_mod.SymbolKind;
 pub const SymbolBinding = symbol_mod.SymbolBinding;
 pub const SymTableKind = symbol_mod.SymTableKind;
 
+const reloc_mod = @import("elf/reloc.zig");
+pub const Reloc = reloc_mod.Reloc;
+pub const RelocType = reloc_mod.RelocType;
+
 // Make sub-module tests runnable via `zig build test`.
 test {
     _ = @import("common/number.zig");
@@ -42,6 +46,7 @@ test {
     _ = @import("elf/reader.zig");
     _ = @import("elf/section.zig");
     _ = @import("elf/symbol.zig");
+    _ = @import("elf/reloc.zig");
 }
 
 /// Error set returned by any entry point that can fail because of input data

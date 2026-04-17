@@ -921,6 +921,71 @@ bytes 可能任意对齐。沿用 C.2 的处理：`@memcpy(asBytes(&sym), bytes[
 **C.4** `elf/reloc.zig` — Relocation 迭代器（同样的 memcpy 模式）。
 R_BPF_64_64 / R_BPF_64_32 / R_SBF_SYSCALL 等类型常量集中在 spec §7.3。
 
+---
+
+## C1-C.4 — Relocation 迭代器
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 做的事
+
+1. **新增 `src/elf/reloc.zig`**（~220 行）
+   - `Reloc` struct: index / offset / type_raw / symbol_index / addend(?)
+   - `RelocType` **non-exhaustive** enum：`_` 分支处理 Solana 特有或未来的 type
+   - `RelocIter`：同时支持 SHT_REL（16B/entry）和 SHT_RELA（24B/entry）
+   - 按需 memcpy 成 `Elf64_Rel` 或 `Elf64_Rela`，走 `r_type()` 和 `r_sym()` 方法
+     （这俩方法从 r_info u64 里抽出 low 32 / high 32）
+
+2. **ElfFile 加 `iterRelocations(rel_section)`**
+   - 接受 `Section`，而不是索引或名字——调用方要么遍历时筛，要么按 sh_info 找
+   - 为啥不是名字？byteparser 会这样用：遍历每个 text section 后，再找对应 `.rel.<name>`，直接通过 Section 更灵活
+
+3. **TDD：3 个测试**
+   - 正例：4-section 合成 ELF，`.rel.text` 带 2 条 entry（BPF_64_64 @0x10 / BPF_64_32 @0x20）
+   - `.text`（SHT_PROGBITS）请求 reloc → NotARelocationSection
+   - Non-exhaustive 枚举：手构 type_raw=999 能穿透 kind()
+
+### 关键选择：non-exhaustive RelocType
+
+```zig
+pub const RelocType = enum(u32) {
+    BPF_64_64 = 1,
+    BPF_64_ABS64 = 2,
+    BPF_64_ABS32 = 3,
+    BPF_64_NODYLD32 = 4,
+    BPF_64_32 = 10,
+    _,  // <-- 关键
+};
+```
+
+`_` 让 `@enumFromInt(999)` 合法（不 panic），`switch (kind) { ... else => ... }` 工作。
+rationale：
+
+- Solana 特有的 `R_SBF_SYSCALL`（=10，跟 BPF_64_32 撞值）语义要靠**上下文**分辨
+- byteparser 要处理的 reloc 类型有限，但拒绝未知 type 不如"让它穿透、上层不认识就忽略"
+
+byteparser 阶段（D.1-D.5）用 switch 对已知 type 分派，未知的直接 continue，
+跟 Rust byteparser.rs L219 的 `_ => continue` 行为一致。
+
+### 验收
+
+- [x] 3/3 Reloc 测试通过
+- [x] `zig build test`：**79/79** 全绿（累计）
+
+### Epic C 还剩
+
+C.5 是整合测试——等整个 Epic C 都做完后，用 zignocchio hello.o 真实字节
+跑一轮，确认 section/symbol/reloc 三个迭代器协作正确。同时 Zig 0.16 的
+`std.Io.Dir` 集成也要解决。
+
+### 下一任务
+
+**C.5** `tests/integration.zig`（新建）+ 解决 0.16 Io.Dir API。
+单元测试已经证明逻辑正确；这一步是 smoke test 用真实 ELF 确认没有
+合成 ELF 没覆盖的 corner case。
+
+
 
 
 
