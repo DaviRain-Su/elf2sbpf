@@ -364,4 +364,87 @@ return null;
 **B.5** `common/instruction.zig` — Instruction 结构体 + Span + Either
 helper（一半声明一半构造 API）。
 
+---
+
+## C1-B.5 — Instruction 类型 + 分类助手
+
+**日期**：2026-04-18
+**状态**：✅ 完成（fromBytes/toBytes 留给 B.6/B.7）
+
+### 开工读的规格
+
+- `03-technical-spec.md §2.1`（Instruction 结构）
+- `05-test-spec.md §4.4`（Instruction 测试矩阵）
+- Rust 源：
+  - Instruction 结构 `instruction.rs` L21-29
+  - get_size `instruction.rs` L32-37
+  - is_jump `instruction.rs` L43-48
+  - is_syscall `instruction.rs` L52-59
+  - OperationType 分类 `opcode.rs` L16-30
+
+### 规格修订
+
+**决定**：Phase 3 §2.1 原本写了一个 `LabelRef { name: []const u8 }`
+newtype。这次 port 发现 Rust 直接用 `String`，没有 newtype。我们对
+应用 `[]const u8`——去掉一层不增加信息的抽象。
+
+**用 `Either([]const u8, T)` 代替 `Either(LabelRef, T)`**。
+
+### 做的事
+
+1. **TDD：先写 10 个测试**
+   - `Span` 构造
+   - `Either.left` / `Either.right` 构造和字段访问
+   - `getSize`：Lddw=16，其他=8
+   - `isJump`：枚举全部 23 个 jump opcode（Ja + 11 条件对 Imm/Reg 各一）
+   - `isJump`：Call/Callx/Exit 不算 jump（匹配 Rust OperationType）
+   - `isJump`：ALU/load/store 不算 jump
+   - `isSyscall`：Call + `.left(label)` → true
+   - `isSyscall`：Call + `.right(resolved)` → false
+   - `isSyscall`：非 Call → false
+
+2. **写类型 + 实现**
+   - `Span = struct { start: usize, end: usize }`
+   - `Either(L, R)` comptime 函数，返回 `union(enum) { left, right }`
+   - `Instruction` struct 全 optional 字段（opcode 必有，其他可空）
+   - `INSTRUCTION_SIZE = 8` / `LDDW_SIZE = 16` 常量
+   - `getSize` switch Lddw vs else
+   - `isJump` 穷尽 switch 23 个 jump opcode
+   - `isSyscall` 简化版：opcode == Call 且 imm 是 .left →  true
+   - `fromBytes` / `toBytes` stub `@panic("not implemented yet")`
+
+3. `lib.zig` re-export Instruction / Span / Either
+
+### 遇到的问题
+
+**问题**：`isSyscall` Rust 版用一个全局 `REGISTERED_SYSCALLS` 白名单
+来区分"本地函数 call" vs "syscall call"。我们还没 port syscalls.zig
+（B.9）。
+
+**暂时的处理**：简化为"所有 `Call` + `.left` label = syscall 候选"。
+加了一个 TODO 注释等 B.9 完成后切到真正的白名单。
+
+**对 C1 MVP 的影响评估**：byteparser 只在处理 Call relocation 的
+path 上调 isSyscall，此时 imm 刚被 relocation 处理器设成 `.left(name)`。
+对 zignocchio 的例子，所有这类 name 都是 Solana syscall（因为
+byteparser 不处理用户定义的 local function call 到 lddw 的 path）。
+**短期不会错**，长期要换白名单。
+
+### 规格修订（已改）
+
+- [x] Phase 3 §2.1：用 `[]const u8` 代替 `LabelRef`（Instruction 字段）
+- [x] `C1-tasks.md` §B.5：加 Either 到任务描述、加 `isJump` / `isSyscall` 到验收
+
+### 验收
+
+- [x] 10/10 Instruction 测试全绿
+- [x] `zig build test --summary all`：**30/30** 全绿（累计）
+- [x] 代码跟 Phase 3 §2.1 修订版一致
+
+### 下一任务
+
+**B.6** `common/instruction.zig::fromBytes` — BPF 指令**解码**，
+吃 8 或 16 字节，产 `Instruction`。这是 byteparser 的基石，要非常准。
+
+
 

@@ -16,11 +16,17 @@ pub const Number = @import("common/number.zig").Number;
 pub const Register = @import("common/register.zig").Register;
 pub const Opcode = @import("common/opcode.zig").Opcode;
 
+const instruction = @import("common/instruction.zig");
+pub const Instruction = instruction.Instruction;
+pub const Span = instruction.Span;
+pub const Either = instruction.Either;
+
 // Make sub-module tests runnable via `zig build test`.
 test {
     _ = @import("common/number.zig");
     _ = @import("common/register.zig");
     _ = @import("common/opcode.zig");
+    _ = @import("common/instruction.zig");
 }
 
 /// Error set returned by any entry point that can fail because of input data

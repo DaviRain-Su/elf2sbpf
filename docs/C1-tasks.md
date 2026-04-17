@@ -134,10 +134,13 @@ test` 跑空测试。
     byteparser 只需 `fromByte` / `toByte` / 变体比较，C1 MVP 不需要
   - 决定：推迟到 D 阶段，按需实现
 
-- [ ] **B.5**：`common/instruction.zig` — Instruction 结构
-  - `struct { opcode: Opcode, dst, src, off, imm, span }`
-  - `Span` = `struct { start: usize, end: usize }`
-  - **验收**：能构造 + 字段访问
+- [x] **B.5**：`common/instruction.zig` — Instruction 结构 + 分类助手 ✅ 2026-04-18
+  - `Instruction { opcode, dst, src, off, imm, span }`
+  - `Span { start, end }`
+  - `Either(L, R)` comptime 函数
+  - `getSize()`、`isJump()`、`isSyscall()` 实现（fromBytes/toBytes 占位 panic，留给 B.6/B.7）
+  - **规格修订**：用 `[]const u8` 代替 `LabelRef` newtype（跟 Rust 保持一致，省一层抽象）
+  - **验收**：10 个单测全绿（Span、Either、Lddw=16/其他=8、23 个 jump/3 个 call-class、Syscall 3 种 case）
 
 - [ ] **B.6**：`common/instruction.zig` — `fromBytes(bytes []const u8) !Instruction`
   - Port Rust `Instruction::from_bytes`
@@ -522,7 +525,7 @@ Solana SBPF 特有结构。
 | Epic | 任务数 | 已完成 | 状态 |
 |------|--------|--------|------|
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
-| B — 通用数据类型 | 10 | 3 | 进行中 (30%)* |
+| B — 通用数据类型 | 10 | 4 | 进行中 (44%)* |
 | C — ELF 读取层 | 5 | 0 | 未开始 |
 | D — Byteparser | 9 | 0 | 未开始 |
 | E — AST | 4 | 0 | 未开始 |
@@ -530,7 +533,7 @@ Solana SBPF 特有结构。
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **6** | **11%** |
+| **总计** | **56** | **7** | **13%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
