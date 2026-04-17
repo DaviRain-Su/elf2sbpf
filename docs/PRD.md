@@ -77,6 +77,7 @@ sbpf-linker 其实也在朝这个方向走（README 里的 "upstream BPF" 定位
 | 前端范围 | 只能吃**bitcode**（要求前端开放 bitcode 输出） | 能吃**任何 LLVM 前端的 ELF** |
 | 部署 | 分发带 LLVM 的大二进制 | 分发独立静态二进制 |
 | 维护 | 追踪 LLVM API 变化 | BPF ELF 格式稳定，几乎零维护 |
+| **版本维护成本** | **持续追 LLVM major（6 个月一个）** | **零**——不追任何版本 |
 
 **结论**：bitcode 层试图做跨语言，但付出的代价是依赖 LLVM；ELF 层
 做跨语言更轻量，前端范围更广。elf2sbpf 恰好占住了 ELF 层这个位置。
@@ -84,6 +85,103 @@ sbpf-linker 其实也在朝这个方向走（README 里的 "upstream BPF" 定位
 这不是 C1 的目标——C1 只做 Zig 管道走通。但 elf2sbpf 的架构决策
 （CLI 就是 `input.o output.so`、纯 ELF 输入、零 LLVM 依赖）**本来
 就预留了通用的未来**。详见里程碑 D.6。
+
+### 关于 "`zig cc` 内部还有 LLVM" 的澄清
+
+**一个容易误解的点**：我们说 elf2sbpf 是 "LLVM-free" 的，指的是
+**elf2sbpf 这个工具不链接 libLLVM、不调 LLVM API**。但**整条构建
+管道依然用了 LLVM**——它在 `zig cc` 里面。`zig cc` 字面上就是
+clang + libclang + libLLVM，Zig 把它们打包在发行包里。
+
+所以更精确的措辞是：
+
+- **elf2sbpf 这一段**：无 LLVM，静态 Zig 二进制
+- **`zig cc` 这一段**：有 LLVM，但随 Zig bundle，不是我们的依赖
+- **对用户**：只装 Zig 一个东西，不用单独装 LLVM
+
+这个区分看似迂腐，但**它是 elf2sbpf 相对 sbpf-linker 的关键战略
+优势**——见下节。
+
+### 为什么 elf2sbpf 不追 LLVM 版本（关键优势）
+
+sbpf-linker 维护团队的一个持续痛点：**LLVM 版本追踪**。这不是他们
+做得不好，是**架构决定的必然结果**。
+
+#### sbpf-linker 的架构决定它必须追
+
+```
+sbpf-linker
+  └─ bpf-linker 0.10.3
+      └─ llvm-sys / inkwell（Rust ↔ libLLVM FFI 绑定）
+          └─ libLLVM.so.X（X 必须精确匹配编译时选的版本）
+```
+
+FFI 绑定是**脆**的：
+
+1. **LLVM 每 6 个月一个 major**（21、22、23...）每次都有 API 变动
+2. **bpf-linker 每次都要改**来适配新版 LLVM 的 FFI 签名
+3. **Blueshift 同时维护两个 gallery 分支**（upstream-gallery-21、
+   upstream-gallery-22）来支持两个 LLVM 版本——**双倍工作量**
+4. **用户层也会崩**——C0 实验时亲眼见过：LLVM 22 装在系统里，
+   `bpf-linker 0.10.3`（针对 LLVM 20 写的）直接编译失败
+
+这不是 bug，是"用 FFI 链 libLLVM"这个架构选择的**结构性成本**。
+
+#### elf2sbpf 的架构让我们完全不用追
+
+```
+elf2sbpf
+  └─（没有 LLVM 依赖，纯 Zig stdlib）
+
+zig cc（被调用，不是被链接）
+  └─ 随 Zig 发行版，LLVM 版本由 Zig 团队决定
+```
+
+我们**对 LLVM 版本无感知**。LLVM 22 → 23 → 24 → 30，elf2sbpf
+不改一行代码。
+
+**版本维护责任在哪儿？**
+
+| 责任方 | 为什么 |
+|--------|-------|
+| ~~elf2sbpf 维护者~~ | **不在我们**——不链 LLVM |
+| ~~zignocchio 用户~~ | **不在用户**——只装 Zig |
+| **Zig 团队** | Zig 每次发版时同步升级 bundled LLVM，这是他们的日常工作 |
+
+这是**责任外包**到一个有充足工程能力、有固定发版节奏的上游团队。
+我们把"LLVM 版本追踪"这个持续维护工作**完全从 Solana 生态里
+剥离**，交给 Zig 去负担（而 Zig 团队本来就要做）。
+
+#### 代价：我们锁在 Zig 选的 LLVM 版本上
+
+诚实讲这不是零代价：
+
+- Zig 0.16 绑定的是某个 LLVM 版本，我们就是那个版本
+- 想用更新版 LLVM 的新特性？**等 Zig 下一版**
+- 某个 LLVM BPF codegen bug 在 Zig 0.16 上触发？**等 Zig 修复或
+  升级**（不能自己抢先改）
+
+但这些都是**外部依赖稳定的代价**，不是**持续的维护成本**。两者
+质地完全不同。
+
+#### 战略上的权衡
+
+| 策略 | sbpf-linker | elf2sbpf |
+|------|-------------|----------|
+| LLVM 控制权 | **极度灵活**（可以自己加 pass、改 ABI） | **几乎没有**（用 Zig 给的） |
+| 维护负担 | **持续且高**（6 个月一个 major，每次都改） | **几乎零** |
+| 响应 LLVM bug 的速度 | 快（可以立刻改） | 慢（等 Zig） |
+| 新 LLVM 特性采纳速度 | 快 | 慢 |
+| 适合什么场景 | 需要精确控制 LLVM pass 的重型工具链（如 cargo-build-sbf） | 轻量级、面向终端用户的工具 |
+
+**两条路各有合理性**。sbpf-linker 的定位决定了它必须链 LLVM（它要
+跑 bpf-expand-memcpy、allow-bpf-trap 等自定义 pass）。elf2sbpf 的
+定位决定了我们**不需要也不应该**链 LLVM——我们只做 stage 2，不
+参与 LLVM 级别的处理。
+
+**对 Solana 生态的净效应**：elf2sbpf 给 zignocchio 及未来其他
+语言用户**隔离掉了 LLVM 版本追踪这个长期维护成本**。用户升 Zig
+就是升 LLVM，不用关心 LLVM 版本号存在与否。
 
 ---
 

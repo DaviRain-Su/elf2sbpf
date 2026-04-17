@@ -1,19 +1,25 @@
-# C1 任务清单
+# C1 任务清单（Phase 4 — Task Breakdown）
 
 **目标**：把 sbpf-linker 的 stage 2 完整 port 成 Zig，9/9 zignocchio
 example 跟 `reference-shim` 字节一致。
 
 **预估**：6-8 周单人全职，约 40-55 工作日。
 
-**使用方法**：每个任务完成时勾掉 `[ ]` → `[x]`，同步改这份文档。
-任务发现新子项时，直接添加到对应 Epic 下面，保持这份文档 always
-up-to-date。
+**在 dev-lifecycle 中的位置**：
 
-**约定**：
+- ⬅️ 前置输入：`02-architecture.md`（Phase 2）、`03-technical-spec.md`（Phase 3）、`05-test-spec.md`（Phase 5）
+- ➡️ 下一阶段：`06-implementation-log.md`（Phase 6）
+
+**规则**：
+- **不可跳过 TDD**：每个任务**先写测试骨架**（参照 `05-test-spec.md`
+  对应章节），再写实现
+- **规格先行**：实现之前先对照 `03-technical-spec.md` 对应章节，
+  遇到规格不清晰的地方**改规格再改代码**
 - **验收**：每个任务必须有可验证的产出（对拍脚本跑绿 / 单测过）
 - **Oracle**：`reference-shim` 是真理。Zig 输出要和 shim 输出
   `cmp` 相等
 - **粒度**：每个任务 0.5-2 天；过大就拆
+- **每个任务完成后**：勾掉 `[ ]` → `[x]`，同步改这份文档
 
 ---
 
@@ -31,6 +37,32 @@ C1-A (骨架)
 
 关键路径：**A → B → D → E → G → H → I**，大约 5-6 周。
 F 可以跟 D/E 并行做（独立模块，都是查表类机械活）。
+
+---
+
+## Epic ↔ Phase 3/5 交叉引用（必读）
+
+**每个 Epic 对应的规格章节和测试**。做任何任务**之前**必须先读
+这两处，然后**按 TDD 顺序**：先写测试骨架 → 写实现 → 测试转绿。
+
+| Epic | 规格来源（Phase 3） | 测试矩阵（Phase 5） | 验收 Oracle |
+|------|-------------------|-------------------|------------|
+| A — 骨架 | `02-architecture.md §3` | `05-test-spec.md §2` (命令) | `zig build` + `zig build test` 空跑通 |
+| B — 通用类型 | `03-technical-spec.md §2.1`, `§6.1`, `§7` | `05-test-spec.md §4.1–4.5` | 单测 + hello.o 指令 round-trip |
+| C — ELF 读取 | `03-technical-spec.md §2.2` | `05-test-spec.md §4.6` | 对 hello.o iter 出正确 section/symbol/reloc |
+| D — Byteparser | `03-technical-spec.md §6.2`（改进 gap-fill）、`§8`（18 个边界） | `05-test-spec.md §4.7`（L2 对拍 + 18 个 L1 边界） | ParseResult JSON 跟 shim 一致 |
+| E — AST | `03-technical-spec.md §6.3` | `05-test-spec.md §4.8` | buildProgram 产物对 hello JSON 一致 |
+| F — ELF 输出 | `03-technical-spec.md §2.4`, `§7`（常量）、`§6.4` | `05-test-spec.md §4.9` | 每个 SectionType.bytecode() 字节对 shim 一致 |
+| G — Program emit | `03-technical-spec.md §6.4` | `05-test-spec.md §4.9`（最后的完整 emit） | **hello.o 字节级 MATCH** |
+| H — CLI | `03-technical-spec.md §1.1` | `05-test-spec.md §2.3` | `elf2sbpf hello.o hello.so` 跑通 |
+| I — 对拍 | — | `05-test-spec.md §4.10`（integration） | **9/9 example 全绿** |
+
+**Spec 优先原则**（不可违反）：
+
+- 开工前读 Phase 3 对应章节，读 Phase 5 对应测试
+- 发现规格不清晰 / 有漏洞：**先改 Phase 3，再动代码**
+- 发现测试需要调整：先改 Phase 5，再改测试骨架
+- 不要在代码里"将错就错"——这是 Phase 3 存在的唯一意义
 
 ---
 
