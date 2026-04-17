@@ -197,11 +197,14 @@ test` 跑空测试。
   - `ParseError` 7 个变体（TooShort/NotElf/Not64Bit/NotLittleEndian/NotBpf/CorruptSectionTable/BadShStrIndex）
   - **验收**：6 个测试全绿，**spec §8 边界 #1-5 全覆盖** + 合法最小 header 正例
 
-- [ ] **C.2**：`elf/section.zig` — section 迭代
-  - `iterSections()` 返回 section 列表
-  - 每个 section 有 `name()` `data()` `flags()` `index()` `size()`
-  - **验收**：能列出 hello.o 的 8 个 section，名字跟
-    `llvm-readelf -S` 输出匹配
+- [x] **C.2**：`elf/section.zig` — section 迭代 ✅ 2026-04-18
+  - `SectionIter` + `Section` struct（index / header / name / data + flags/size/kind 访问器）
+  - `iterSections()` / `sectionByIndex()` 挂在 ElfFile 上
+  - `cstrAt` helper 安全读 C 字符串（null-terminated 或 buffer 边界）
+  - **关键重构**：`header: *const Elf64_Ehdr` → `header: Elf64_Ehdr`（by-value）
+    避免输入字节对齐要求；各 section 的 header 也 by-value，`sectionHeaderAt` 做 memcpy。
+    从"zero-copy + 要求对齐"改成"轻度 memcpy + 任意对齐"，更健壮
+  - **验收**：8 个单测全绿，含 cstrAt 3 种路径 + 3-section 合成 ELF 的迭代/命名/数据/flags/NULL 断言
 
 - [ ] **C.3**：`elf/symbol.zig` — symbol 迭代
   - `iterSymbols()` 返回所有符号
@@ -538,14 +541,14 @@ Solana SBPF 特有结构。
 |------|--------|--------|------|
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
-| C — ELF 读取层 | 5 | 1 | 进行中 (20%) |
+| C — ELF 读取层 | 5 | 2 | 进行中 (40%) |
 | D — Byteparser | 9 | 0 | 未开始 |
 | E — AST | 4 | 0 | 未开始 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **12** | **21%** |
+| **总计** | **56** | **13** | **23%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

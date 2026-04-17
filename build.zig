@@ -52,6 +52,10 @@ pub fn build(b: *std.Build) void {
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
+    // TODO(C.5): add integration tests here once Zig 0.16's new Io.Dir
+    // API is wired in. We'll either use @embedFile against a fixture
+    // copied under tests/fixtures/, or set up a std.Io.Threaded context.
+
     const test_step = b.step("test", "Run all unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);

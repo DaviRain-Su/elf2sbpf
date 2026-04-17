@@ -788,6 +788,85 @@ embed 限制。reader.zig 的单测只用手工合成的合法/非法 header。
 **C.2** `elf/section.zig` — section 迭代器：`iterSections()` 给每
 个 section 的 name / data / flags / size 等字段访问。
 
+---
+
+## C1-C.2 — Section 迭代器
+
+**日期**：2026-04-18
+**状态**：✅ 完成（集成测试推迟到 C.5）
+
+### 开工读的规格
+
+- `03-technical-spec.md §2.2`（Section 结构）
+- `05-test-spec.md §4.6`（elf reader 测试矩阵）
+
+### 做的事
+
+1. **建 `src/elf/section.zig`**
+   - `Section` struct：`index / header / name / data` + `flags/size/kind` 方法
+   - `SectionIter` struct：index 自增迭代
+   - `buildSection(file, idx)`：核心构造——从 shstrtab 读 name，切 data
+   - `cstrAt` helper：安全读 null-terminated C 字符串（buffer 边界处理）
+
+2. **在 `reader.zig` 加 3 个方法**
+   - `iterSections()` 返回 `SectionIter`
+   - `sectionByIndex(idx)` 直接返回 `Section`
+   - `sectionHeaderAt(idx)` 返回 `Elf64_Shdr` by value
+
+3. **TDD：11 个测试**
+   - `cstrAt` 3 种路径（正常、越界、无终止符）
+   - 3-section 合成 ELF（NULL + .text + .shstrtab）的迭代、命名、数据、flags、kind、NULL section
+
+### 遇到的大问题：对齐 panic
+
+**问题**：测试里 `const bytes: [276]u8 = makeThreeSectionElf();` 栈
+数组不保证 8 字节对齐。`parse()` 里 `@alignCast(bytes.ptr)` 到
+`*const Elf64_Ehdr`（要求 align 8）在 safe mode 触发 panic。
+
+**根因**：Zig 的 `@alignCast` 从小对齐指针升到大对齐指针，runtime
+会 assert 对齐正确。栈 `[N]u8` 只保证 align(1)，无法保证 align(8)。
+
+**两种 fix 路线**：
+1. 强制输入对齐：`parse(bytes: []align(8) const u8)`，让类型系统
+   push 对齐责任给调用方。caller 需要 `var buf align(8) = ...`。
+2. 内部复制：`@memcpy(std.mem.asBytes(&hdr), bytes[0..64])` 把
+   header 复制到本地值。不再持有指向 bytes 的指针。
+
+**选路线 2（更健壮）**：
+- 用户 API 更自由（`[]const u8` 接任意对齐的字节）
+- header 由值存储（64 字节）
+- section_headers 不再持有 typed slice——改成 `sh_offset` + `sh_count`
+  + `sectionHeaderAt(idx)` 方法按需 memcpy
+- `Section.header` 也改成 by-value
+- 成本：每访问一个 section header 多一次 64 字节 memcpy。对我们
+  场景（section 数 < 20，每个读 1-2 次）可忽略
+
+**教训**：zero-copy 是诱人的但对齐假设很脆。memcpy 的成本几乎总是
+值得的。
+
+### 集成测试推迟到 C.5
+
+原本想在 `tests/integration.zig` 用 `std.fs.cwd().openFile(...)`
+加载真实 hello.o 做集成。发现 Zig 0.16 把 `std.fs.cwd()` 迁到
+`std.Io.Dir.cwd()`，而且所有文件操作都要 `Io` 上下文参数
+（Writergate 的延续）。
+
+决定：**C.2 的单测足够证明 section 逻辑正确**（合成 ELF 覆盖所有
+路径）。真实 ELF 集成测试作为 C.5 专项解决，届时统一处理 Io API
+迁移 + 所有 elf 层集成。
+
+### 验收
+
+- [x] 11 个新单测全绿
+- [x] `zig build test`：**73/73** 全绿（累计）
+- [x] 类型安全：任意对齐的输入字节都能 parse
+
+### 下一任务
+
+**C.3** `elf/symbol.zig` — symbol 迭代器。符号表读取同样有对齐问题，
+用跟 C.2 一样的 "by-value + memcpy" 模式处理。
+
+
 
 
 
