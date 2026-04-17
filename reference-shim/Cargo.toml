@@ -1,0 +1,11 @@
+[package]
+name = "elf2sbpf-shim"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+sbpf-assembler = "0.1.8"
+sbpf-common = "0.1.8"
+object = { version = "0.37.3", features = ["write"] }
+either = { version = "1.15.0", features = ["serde"] }
+anyhow = "1"

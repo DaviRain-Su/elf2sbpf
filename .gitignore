@@ -1,0 +1,16 @@
+zig-cache/
+zig-out/
+.zig-cache/
+*.bc
+*.o
+*.so
+fixtures/helloworld/out/
+fixtures/validate-all/
+!fixtures/helloworld/out/.gitkeep
+
+# Rust reference shim
+reference-shim/target/
+reference-shim/Cargo.lock
+
+# macOS
+.DS_Store
