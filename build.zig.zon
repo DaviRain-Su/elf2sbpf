@@ -1,0 +1,15 @@
+.{
+    .name = .elf2sbpf,
+    .version = "0.1.0-pre",
+    // Generated for this project; do not change (see Zig docs on package
+    // identity — changing this value is considered hostile forking).
+    .fingerprint = 0xd44fd21a1daffd7,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+    },
+}

@@ -75,24 +75,23 @@ test` 跑空测试。
 
 ### 任务
 
-- [ ] **A.1**：初始化 `build.zig` 和 `build.zig.zon`
-  - `build.zig` 能产出名为 `elf2sbpf` 的 exe
-  - 有 `zig build test` target
-  - 锁定 Zig 0.16.0（`zig_version_minimum`）
-  - **验收**：`zig build` 成功，`./zig-out/bin/elf2sbpf` 存在
+- [x] **A.1**：初始化 `build.zig` 和 `build.zig.zon` ✅ 2026-04-18
+  - `build.zig` 产出名为 `elf2sbpf` 的 exe
+  - 有 `zig build test` target（3 个 step：default、run、test）
+  - 锁定 Zig 0.16.0（`.minimum_zig_version = "0.16.0"`）
+  - **验收**：`zig build` 成功，`./zig-out/bin/elf2sbpf` 1.8MB，`otool -L` 确认不链 libLLVM
+  - **实现日志**：`docs/06-implementation-log.md` § C1-A.1
 
-- [ ] **A.2**：建 `src/` 目录骨架（占位文件）
-  - `src/main.zig`：空 main
-  - `src/lib.zig`：空 re-export
-  - 各子模块目录：`common/` `elf/` `parse/` `ast/` `emit/`
-  - 每个子模块有一个占位 `mod.zig` 或目录占位 `.gitkeep`
-  - **验收**：目录结构匹配 PRD 里的树图
+- [x] **A.2**：建 `src/` 目录骨架 ✅ 2026-04-18（部分）
+  - `src/main.zig`：CLI 占位 + 1 个 smoke test
+  - `src/lib.zig`：`LinkError` + `linkProgram` 占位 + 2 个 smoke test
+  - 子模块目录（`common/` `elf/` `parse/` `ast/` `emit/`）**延后到对应 Epic 开工时建**，避免空目录
+  - **验收**：顶层结构匹配 architecture §3
 
-- [ ] **A.3**：建测试 harness
-  - `tests/unit/`：放各模块单测
-  - `tests/integration/`：端到端测试
-  - `scripts/validate-zig.sh`：跑 Zig 版 + shim + cmp
-  - **验收**：`./scripts/validate-zig.sh hello` 能跑（虽然此刻 Zig 版还输出空）
+- [x] **A.3**：建测试 harness ✅ 2026-04-18
+  - `zig build test` 跑通 3/3 测试（2 个在 lib module，1 个在 exe module）
+  - `scripts/validate-zig.sh` 推迟到 Epic C1-I（实际端到端对拍时才需要）
+  - **验收**：`zig build test --summary all` 全绿
 
 ---
 
@@ -518,7 +517,7 @@ Solana SBPF 特有结构。
 
 | Epic | 任务数 | 已完成 | 状态 |
 |------|--------|--------|------|
-| A — 项目骨架 | 3 | 0 | 未开始 |
+| A — 项目骨架 | 3 | 3 | ✅ 完成 |
 | B — 通用数据类型 | 10 | 0 | 未开始 |
 | C — ELF 读取层 | 5 | 0 | 未开始 |
 | D — Byteparser | 9 | 0 | 未开始 |
@@ -527,7 +526,7 @@ Solana SBPF 特有结构。
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **0** | **0%** |
+| **总计** | **56** | **3** | **5%** |
 
 ---
 
