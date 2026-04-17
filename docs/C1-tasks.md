@@ -189,10 +189,13 @@ test` 跑空测试。
 
 ### 任务
 
-- [ ] **C.1**：`elf/reader.zig` — `ElfFile.parse(bytes: []const u8)`
-  - 用 `std.elf.Header.read` 验证 ELF 头
-  - 返回一个 handle，封装原始字节
-  - **验收**：能读 zignocchio hello.o，确认 `e_machine == EM_BPF (247)`
+- [x] **C.1**：`elf/reader.zig` — `ElfFile.parse(bytes: []const u8)` ✅ 2026-04-18
+  - 手工验证 ELF header（magic、class、endian、machine）而不走 `std.elf.Header.read`
+    因为后者是基于 reader 的 API，我们要对内存中的字节做零拷贝
+  - `@ptrCast` + `@alignCast` 把 `bytes` 重新解释成 `*const Elf64_Ehdr`（零拷贝）
+  - 同时切出 section header table（typed slice）+ 定位 `.shstrtab`
+  - `ParseError` 7 个变体（TooShort/NotElf/Not64Bit/NotLittleEndian/NotBpf/CorruptSectionTable/BadShStrIndex）
+  - **验收**：6 个测试全绿，**spec §8 边界 #1-5 全覆盖** + 合法最小 header 正例
 
 - [ ] **C.2**：`elf/section.zig` — section 迭代
   - `iterSections()` 返回 section 列表
@@ -534,15 +537,15 @@ Solana SBPF 特有结构。
 | Epic | 任务数 | 已完成 | 状态 |
 |------|--------|--------|------|
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
-| B — 通用数据类型 | 10 | 8 | 进行中 (89%)* |
-| C — ELF 读取层 | 5 | 0 | 未开始 |
+| B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
+| C — ELF 读取层 | 5 | 1 | 进行中 (20%) |
 | D — Byteparser | 9 | 0 | 未开始 |
 | E — AST | 4 | 0 | 未开始 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **11** | **20%** |
+| **总计** | **56** | **12** | **21%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

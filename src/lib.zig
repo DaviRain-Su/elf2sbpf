@@ -23,6 +23,8 @@ pub const Either = instruction.Either;
 
 pub const murmur3_32 = @import("common/syscalls.zig").murmur3_32;
 
+pub const ElfFile = @import("elf/reader.zig").ElfFile;
+
 // Make sub-module tests runnable via `zig build test`.
 test {
     _ = @import("common/number.zig");
@@ -30,6 +32,7 @@ test {
     _ = @import("common/opcode.zig");
     _ = @import("common/instruction.zig");
     _ = @import("common/syscalls.zig");
+    _ = @import("elf/reader.zig");
 }
 
 /// Error set returned by any entry point that can fail because of input data

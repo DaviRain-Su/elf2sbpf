@@ -716,6 +716,79 @@ hash = std.math.rotl(u32, hash, 15);  // 15 is comptime_int, auto-coerces to u5
 **B.10** 是 Epic B 的收尾集成 —— 把所有 common/ 模块一起跑一遍，
 确认模块间协作没问题。然后进入 **Epic C（ELF 读取层）**。
 
+---
+
+## C1-C.1 — `ElfFile.parse()`
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 开工读的规格
+
+- `03-technical-spec.md §2.2`（ElfFile 结构 + parse 契约）
+- `03-technical-spec.md §8`（边界 #1-5，都是 ELF header 验证）
+- `05-test-spec.md §4.6`（elf reader 测试矩阵）
+
+### 设计决策
+
+**不用 `std.elf.Header.read`**——那是基于 `Io.Reader` 的 API，要从
+流里 takeStruct。我们有内存里的字节，要**零拷贝**地 reinterpret。
+
+**直接 `@ptrCast` + `@alignCast`**：把 `bytes.ptr` 当成
+`*const Elf64_Ehdr`。因为 Elf64_Ehdr 是 extern struct（C layout、
+无对齐 padding），这是安全的。
+
+**section header table 也是零拷贝切片**：`bytes.ptr + sh_off` 指针
+转 `[*]const Elf64_Shdr`，再 `[0..sh_count]` 变成切片。
+
+### 做的事
+
+1. 建 `src/elf/` 目录
+2. **TDD：先写 6 个测试**（5 个边界错 + 1 个最小合法 header 正例）
+3. 写 `ParseError` 错误集 + `ElfFile` struct + `parse()` 函数
+4. `lib.zig` re-export ElfFile
+
+### 遇到的问题
+
+**问题 1：`elf.EI.CLASS` 不是 enum**
+
+首写用了 `@intFromEnum(elf.EI.CLASS)`，编译器报"expected enum or
+tagged union, found 'comptime_int'"。
+
+**根因**：`std.elf.EI` 是一个 `struct { pub const CLASS = 4; ... }`
+——不是 enum 而是 namespace。值本身就是 usize。
+
+**解决**：直接用 `elf.EI.CLASS` 做数组下标，不走 `@intFromEnum`。
+
+**问题 2：`@embedFile` 不能跨 package boundary**
+
+想在测试里用 `@embedFile("../../fixtures/.../hello.o")` 做真实正例
+测试，Zig 报错"embed of file outside package path"。
+
+**根因**：Zig 0.16 限制了 `@embedFile` 只能读 src/ 内的东西，防止
+意外打包项目外文件到 binary。
+
+**解决**：挪走真实文件的集成测试到 `tests/integration.zig`（Epic
+C.5 会建），那里用 `std.fs.cwd().readFileAlloc` 运行时加载，不受
+embed 限制。reader.zig 的单测只用手工合成的合法/非法 header。
+
+### 验收
+
+- [x] 6 个测试全绿
+  - spec §8 #1：< 64 bytes → `TooShort`
+  - spec §8 #3：magic 非 ELF → `NotElf`
+  - spec §8 #5：32-bit → `Not64Bit`
+  - spec §8 #4：big-endian → `NotLittleEndian`
+  - spec §8 #2：e_machine != EM_BPF → `NotBpf`
+  - 正例：minimal ET_DYN/EM_BPF/ELFCLASS64/LE header 能 parse
+- [x] `zig build test --summary all`：**65/65** 全绿
+
+### 下一任务
+
+**C.2** `elf/section.zig` — section 迭代器：`iterSections()` 给每
+个 section 的 name / data / flags / size 等字段访问。
+
+
 
 
 
