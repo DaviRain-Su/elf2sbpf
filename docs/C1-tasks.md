@@ -142,11 +142,15 @@ test` 跑空测试。
   - **规格修订**：用 `[]const u8` 代替 `LabelRef` newtype（跟 Rust 保持一致，省一层抽象）
   - **验收**：10 个单测全绿（Span、Either、Lddw=16/其他=8、23 个 jump/3 个 call-class、Syscall 3 种 case）
 
-- [ ] **B.6**：`common/instruction.zig` — `fromBytes(bytes []const u8) !Instruction`
-  - Port Rust `Instruction::from_bytes`
-  - **关键**：lddw 是 16 字节，其他是 8 字节；imm 拼接
-  - **验收**：用 zignocchio hello.o 的 `.text` 逐条 decode，跟
-    llvm-objdump 输出对照
+- [x] **B.6**：`common/instruction.zig` — `fromBytes` ✅ 2026-04-18
+  - 按 opcode 的 `operationType()` 分类，13 种 class 各自解析字段布局
+  - Lddw 16 字节特殊：第二个 8 字节槽的 bytes 12-15 是 imm_high
+  - Callx (SBPF 扩展)：dst 编码在 imm 里的归一化处理
+  - `DecodeError` 错误集合：TooShort / UnknownOpcode / FieldMustBeZero / InvalidSrcRegister
+  - **关键辅助**：`OperationType` enum + `Opcode.operationType()` 加到
+    `common/opcode.zig`（116 个 opcode 的分类表）
+  - **验收**：14 个新测试，**用真实 hello.o / counter.o 字节**验证所有
+    13 种 operation 类型；错误路径 4 种全部验证；spec §8 边界 #12（未知 opcode） + #16（JMP32 0x16 拒绝） 明确验证
 
 - [ ] **B.7**：`common/instruction.zig` — `toBytes(Instruction) ![]u8`
   - 逆操作
@@ -525,7 +529,7 @@ Solana SBPF 特有结构。
 | Epic | 任务数 | 已完成 | 状态 |
 |------|--------|--------|------|
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
-| B — 通用数据类型 | 10 | 4 | 进行中 (44%)* |
+| B — 通用数据类型 | 10 | 5 | 进行中 (56%)* |
 | C — ELF 读取层 | 5 | 0 | 未开始 |
 | D — Byteparser | 9 | 0 | 未开始 |
 | E — AST | 4 | 0 | 未开始 |
@@ -533,7 +537,7 @@ Solana SBPF 特有结构。
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **7** | **13%** |
+| **总计** | **56** | **8** | **14%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

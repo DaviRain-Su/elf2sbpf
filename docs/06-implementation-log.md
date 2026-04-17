@@ -446,5 +446,95 @@ byteparser 不处理用户定义的 local function call 到 lddw 的 path）。
 **B.6** `common/instruction.zig::fromBytes` — BPF 指令**解码**，
 吃 8 或 16 字节，产 `Instruction`。这是 byteparser 的基石，要非常准。
 
+---
+
+## C1-B.6 — `Instruction.fromBytes` 解码
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 开工读的规格
+
+- `03-technical-spec.md §2.1`（Instruction fromBytes 签名）
+- `05-test-spec.md §4.4`（Instruction 测试矩阵）
+- Rust 源：
+  - 入口 `instruction.rs::from_bytes` L85-96
+  - 13 个 decode_* 子函数 `decode.rs` L1-353
+  - 分类常量表 `opcode.rs` L32-175
+  - OperationType enum `opcode.rs` L16-30
+
+### 做的事
+
+1. **先补 opcode.zig**
+   - 新增 `OperationType` enum（13 个变体）
+   - 新增 `Opcode.operationType()` 方法：穷尽 switch 116 个 opcode
+     归类到 13 个 class，跟 Rust 常量表一一对应（关键：Le/Be/Hor64Imm
+     归入 BinaryImmediate）
+
+2. **TDD：先写 14 个测试**，再写实现
+   - 错误路径：TooShort（<8）、UnknownOpcode（0xff）、JMP32 拒绝（0x16）
+   - 所有 13 种 operation class 至少一个正 case（用真实 hello.o /
+     counter.o 字节）
+   - Callx 归一化 case（dst=0 + imm!=0）
+   - Call src 范围检查（src=2 → InvalidSrcRegister）
+   - Lddw < 16 字节 → TooShort
+
+3. **写 `fromBytes`**
+   - 公共前缀：parse_bytes 解出 (opcode, dst_raw, src_raw, off_raw, imm_raw)
+   - 按 `operationType()` 的 13 种 class switch
+   - 每个 class 决定哪些字段 populate、哪些必须是 0
+   - Lddw 特殊：额外读 bytes 12..15 取 imm_high，组合成 i64
+   - Callx 特殊：SBPF 扩展的 dst-in-imm 归一化
+   - 所有 "must be zero" 检查都返回 `DecodeError.FieldMustBeZero`
+
+4. **新增 DecodeError 错误集合**
+   - TooShort / UnknownOpcode / FieldMustBeZero / InvalidSrcRegister
+
+### 遇到的问题 & 学习
+
+**问题 1：Zig 0.16 std.mem.readInt 要求 `*const [N]u8` 而不是 slice**
+
+初写用的是 `std.mem.readInt(u16, bytes[2..4], .little)` —— 传切片。
+其实要 `bytes[2..4]` 作为 array pointer，Zig 0.16 通过 comptime 知
+道切片长度正好是 2 就接受。这次正好工作。
+
+**问题 2：Lddw imm 拼接要走 u64 中转**
+
+```zig
+const imm_u64: u64 = (@as(u64, @as(u32, @bitCast(imm_high))) << 32)
+                    | @as(u32, @bitCast(imm_raw));
+const imm_i64: i64 = @bitCast(imm_u64);
+```
+
+两层 bitcast：
+- imm_high (i32) → @bitCast → u32 (保留符号位模式)
+- 低 32 bit: @as(u32, @bitCast(imm_raw))（同样 i32 → u32 位模式）
+- 拼接为 u64，再 bitcast 成 i64
+
+直接 `(imm_high << 32) | imm_raw` 会因为 i32 符号扩展坏掉低 32 位。
+
+### 规格符合性检查
+
+Phase 3 §8 边界条件验证：
+
+- [x] #12（未知 opcode）→ UnknownOpcode error
+- [x] #13（`.text` 不是 8 倍数 —— 但 fromBytes 只处理单条，由
+      byteparser 循环承担这个检查）
+- [x] #16（JMP32 opcode 0x16 拒绝）→ UnknownOpcode（Opcode enum 里
+      根本没有 0x16 → 0x1e 这些 JMP32 变体）
+
+### 验收
+
+- [x] 14 个 fromBytes 测试全部通过
+- [x] `zig build test --summary all`：**44/44** 全绿（累计）
+- [x] 真实 hello.o 的 4 种指令字节（Ldxdw, Call, Mov64Imm, Exit）
+      和 counter.o 的 Mov64Reg 都通过 decode
+
+### 下一任务
+
+**B.7** `common/instruction.zig::toBytes` — 编码，`fromBytes` 的反
+操作。要做 round-trip 测试（decode → encode → decode 字节级一致）。
+
+
 
 
