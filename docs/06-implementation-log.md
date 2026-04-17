@@ -274,3 +274,94 @@ const output = fbs.buffered();  // 返回已写入的切片
 **B.3** `common/opcode.zig` —— Opcode enum + 辅助函数（**大任务**，
 约 500 个 variant，Rust 源 1120 行）。
 
+---
+
+## C1-B.3 — Opcode enum + toStr
+
+**日期**：2026-04-18
+**状态**：✅ 完成（B.4 helper 函数推迟）
+
+### 开工读的规格
+
+- `03-technical-spec.md §2.1`（Opcode 结构 + 辅助函数列表）
+- `05-test-spec.md §4.3`（Opcode 测试矩阵）
+- Rust 源：
+  - 枚举定义 `opcode.rs` L178-295
+  - byte 映射 `opcode.rs` L382-510（TryFrom<u8>）
+  - toStr `opcode.rs` L636-710
+  - **这 3 个块是 C1 Opcode 的全部规格来源**
+
+### 范围调整（C1 scope 收紧）
+
+`C1-tasks.md` 把 Opcode 拆成 B.3（enum）+ B.4（5 个 helper 函数）。
+实际评估后发现：
+
+- `fromSize` / `toSize` / `toOperator` / `is32bit` **只给 assembler
+  text parser 用**（parse `add 64 r1, r2` 这种汇编语法）
+- **byteparser** 只用 `fromByte` / `toByte` 加变体 `==` 比较
+- **ast/emit** 同上
+
+结论：B.4 这些 helper **C1 MVP 不需要**，移到 D 阶段按需实现。
+
+原估 Opcode variant 数 500 也是错的——实际 **116 个**（枚举定义
+从 L179 到 L294 共 116 行）。
+
+### 做的事
+
+1. **TDD：先写测试**（5 个）：
+   - 重点 opcode byte 值对照表（Lddw=0x18、Call=0x85、Exit=0x95 等）
+   - `fromByte(0xff)` 等非法字节返回 null（**含 `fromByte(0x16)` JMP32 必拒**——C0 发现）
+   - `inline for` 全部 116 个 variant 的 round-trip
+   - `inline for` 全部 116 个 variant 的 `toStr` 非空
+   - Key mnemonic 字面值对照（"lddw"、"call"、"exit"、"jeq"、"add64"）
+
+2. **写实现**：
+   - `enum(u8) { Lddw = 0x18, Ldxb = 0x71, ... }` 共 116 个变体
+   - **按 Rust 源的功能分组顺序**（loads → stores → 32-bit ALU → 64-bit ALU → jumps → call/exit），
+     便于日后跟 Rust 源做 diff
+   - `fromByte` 用 `inline for` 校验字节值再 `@enumFromInt`
+   - `toByte = @intFromEnum`
+   - `toStr` 分组 switch，Imm/Reg 共享同一助记符（如 `.Add64Imm, .Add64Reg => "add64"`）
+
+3. 在 `lib.zig` re-export + `test {}` 聚合
+
+### 遇到的问题
+
+**问题**：`std.meta.intToEnum` 在 Zig 0.16 被移除。
+
+**原因**：0.16 的 `std.meta` 精简了 API。intToEnum 要求对 exhaustive
+enum 的非法值返回 error，这个语义改用内建机制表达。
+
+**解决**：用 inline for + `@enumFromInt`：
+```zig
+inline for (@typeInfo(Opcode).@"enum".fields) |f| {
+    if (byte == f.value) return @enumFromInt(f.value);
+}
+return null;
+```
+编译期展开成 116-way 跳转表，runtime 成本接近零；对非法字节安全返回 null。
+
+**教训**：Zig 0.16 对 "exhaustive enum + 非法值" 的操作更严格，
+要么自己校验、要么用 non-exhaustive enum（带 `_` 成员）。C1 选前者
+因为我们**想**对非法 opcode 返回错。
+
+### 规格修订
+
+- [x] C1-tasks.md §B.3：variant 数 500 → 116（原估过保守）
+- [x] C1-tasks.md §B.4：整块推迟到 D 阶段（标注"分析 & 决定"）
+- [x] Epic B 进度表：10 个任务 → 实际 9 个（B.4 移出）
+
+### 验收
+
+- [x] 5/5 Opcode 测试全绿（**inline for 覆盖全部 116 variant 的
+      fromByte/toByte round-trip**）
+- [x] **fromByte(0x16)** 返回 null 验证——JMP32 opcode 被拒绝，
+      跟 `03-technical-spec.md §8` 边界条件 #16 一致
+- [x] `zig build test --summary all`：20/20 全绿
+
+### 下一任务
+
+**B.5** `common/instruction.zig` — Instruction 结构体 + Span + Either
+helper（一半声明一半构造 API）。
+
+

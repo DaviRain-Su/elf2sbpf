@@ -120,20 +120,19 @@ test` 跑空测试。
   - **规格修订**：Phase 3 §2.1 改 u4→u8；Phase 5 §4.2 更新测试
   - **实现日志**：`06-implementation-log.md` § C1-B.2
 
-- [ ] **B.3**：`common/opcode.zig` — Opcode enum
-  - Port Rust `opcode.rs` 的 Opcode enum（约 500 个变体）
-  - 用 Zig `enum(u8)` 实现，每个变体指定底层字节值
-  - **任务**：逐个对照 Rust 版，**不能漏也不能加**
-  - **验收**：所有 V0 opcode 从 `u8` 回到 enum，往返一致（单测
-    cover 每个 variant）
+- [x] **B.3**：`common/opcode.zig` — Opcode enum + toStr ✅ 2026-04-18
+  - Port Rust `opcode.rs` 的 Opcode enum（实际 **116 variant**，不是原估的 500；我估得太保守）
+  - Zig `enum(u8)`，每个变体显式字节值（对照 Rust TryFrom<u8> L382-510）
+  - `fromByte` 用 `inline for` 校验（Zig 0.16 没有 `std.meta.intToEnum`）
+  - `toStr` 人读助记符
+  - **验收**：5 个单测全绿，inline for 覆盖全部 116 variant 的 round-trip
+  - **实现日志**：`06-implementation-log.md` § C1-B.3
 
-- [ ] **B.4**：`common/opcode.zig` — 辅助函数
-  - `toStr(Opcode) []const u8`
-  - `fromSize(size: []const u8, kind: MemOpKind) ?Opcode`
-  - `toSize(Opcode) ?[]const u8`
-  - `toOperator(Opcode) ?[]const u8`
-  - `is32bit(Opcode) bool`
-  - **验收**：跟 Rust 版对照表 golden test
+- [ ] ~~**B.4**：辅助函数~~（**推迟到 D 阶段**）
+  - 原计划：`fromSize` / `toSize` / `toOperator` / `is32bit`
+  - 分析：这些只给 assembler text parser 用（解析 `add 64 r1, r2` 语法）；
+    byteparser 只需 `fromByte` / `toByte` / 变体比较，C1 MVP 不需要
+  - 决定：推迟到 D 阶段，按需实现
 
 - [ ] **B.5**：`common/instruction.zig` — Instruction 结构
   - `struct { opcode: Opcode, dst, src, off, imm, span }`
@@ -523,7 +522,7 @@ Solana SBPF 特有结构。
 | Epic | 任务数 | 已完成 | 状态 |
 |------|--------|--------|------|
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
-| B — 通用数据类型 | 10 | 2 | 进行中 (20%) |
+| B — 通用数据类型 | 10 | 3 | 进行中 (30%)* |
 | C — ELF 读取层 | 5 | 0 | 未开始 |
 | D — Byteparser | 9 | 0 | 未开始 |
 | E — AST | 4 | 0 | 未开始 |
@@ -531,7 +530,9 @@ Solana SBPF 特有结构。
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **5** | **9%** |
+| **总计** | **56** | **6** | **11%** |
+
+\* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
 ---
 
