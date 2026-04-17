@@ -14,6 +14,7 @@
 const std = @import("std");
 const elf = std.elf;
 const section_mod = @import("section.zig");
+const symbol_mod = @import("symbol.zig");
 
 pub const ParseError = error{
     /// Bytes too short to contain a 64-byte ELF header.
@@ -140,6 +141,16 @@ pub const ElfFile = struct {
     pub fn sectionByIndex(self: *const ElfFile, idx: u16) section_mod.SectionError!section_mod.Section {
         std.debug.assert(idx < self.sh_count);
         return section_mod.buildSection(self, idx);
+    }
+
+    /// Iterator over symbols in the requested symbol table (static .symtab
+    /// or dynamic .dynsym). Returns SymbolError.NoSymbolTable if no table
+    /// of that kind exists.
+    pub fn iterSymbols(
+        self: *const ElfFile,
+        kind: symbol_mod.SymTableKind,
+    ) symbol_mod.SymbolError!symbol_mod.SymbolIter {
+        return symbol_mod.makeIter(self, kind);
     }
 };
 

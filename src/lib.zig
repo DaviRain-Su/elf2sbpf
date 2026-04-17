@@ -26,6 +26,12 @@ pub const murmur3_32 = @import("common/syscalls.zig").murmur3_32;
 pub const ElfFile = @import("elf/reader.zig").ElfFile;
 pub const Section = @import("elf/section.zig").Section;
 
+const symbol_mod = @import("elf/symbol.zig");
+pub const Symbol = symbol_mod.Symbol;
+pub const SymbolKind = symbol_mod.SymbolKind;
+pub const SymbolBinding = symbol_mod.SymbolBinding;
+pub const SymTableKind = symbol_mod.SymTableKind;
+
 // Make sub-module tests runnable via `zig build test`.
 test {
     _ = @import("common/number.zig");
@@ -35,6 +41,7 @@ test {
     _ = @import("common/syscalls.zig");
     _ = @import("elf/reader.zig");
     _ = @import("elf/section.zig");
+    _ = @import("elf/symbol.zig");
 }
 
 /// Error set returned by any entry point that can fail because of input data

@@ -866,6 +866,62 @@ embed 限制。reader.zig 的单测只用手工合成的合法/非法 header。
 **C.3** `elf/symbol.zig` — symbol 迭代器。符号表读取同样有对齐问题，
 用跟 C.2 一样的 "by-value + memcpy" 模式处理。
 
+---
+
+## C1-C.3 — Symbol 迭代器
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 做的事
+
+1. **新增 `src/elf/symbol.zig`**（~260 行）
+   - `Symbol` struct（index / raw Elf64_Sym by-value / name 切片）
+   - `SymbolKind` 7-variant enum + Unknown fallback
+   - `SymbolBinding` 3-variant enum + Unknown fallback
+   - `SymTableKind` { symtab, dynsym } —— 选表
+   - `SymbolIter` 按 index 自增，每次 memcpy 24 字节 Elf64_Sym
+   - `makeIter(file, kind)` 定位表：扫 section，匹配 SHT_SYMTAB/SHT_DYNSYM，
+     sh_link 找关联 strtab，验证 entsize + 边界
+
+2. **ElfFile 加一个方法 `iterSymbols(kind)`**
+
+3. **TDD：3 个测试**
+   - 正例：4-section 合成 ELF（NULL + .symtab + .strtab + .shstrtab）
+     带 3 个 symbol，完整解码 kind/binding/sectionIndex/address/size/name
+   - 无符号表：minimal ELF → `NoSymbolTable`
+   - 错类型请求：.symtab-only ELF 请求 `.dynsym` → `NoSymbolTable`
+
+### 遇到的问题
+
+**问题**：`elf.STB_GLOBAL` 在 Zig 0.16 被声明成 `u2`（刚好容下 0/1/2/3），
+直接 `<< 4` 会类型溢出编译失败。
+
+**解决**：先 `@as(u8, STB_GLOBAL)` 转宽再移位：
+```zig
+(@as(u8, elf.STB_GLOBAL) << 4) | @as(u8, elf.STT_FUNC)
+```
+
+教训：Zig 对枚举背后的底层类型严格，不会自动扩宽用于位运算。
+
+### 复用 C.2 的 by-value 模式
+
+符号迭代跟 section 同样的对齐隐患——Elf64_Sym 需要 8 字节对齐，输入
+bytes 可能任意对齐。沿用 C.2 的处理：`@memcpy(asBytes(&sym), bytes[off..off+24])`
+每 entry 一次，24 字节 memcpy 在 2026 年的硬件上约等于零。
+
+### 验收
+
+- [x] 3/3 Symbol 测试通过
+- [x] `zig build test`：**76/76** 全绿（累计）
+- [x] 所有 SymbolKind / Binding 变体正确映射
+
+### 下一任务
+
+**C.4** `elf/reloc.zig` — Relocation 迭代器（同样的 memcpy 模式）。
+R_BPF_64_64 / R_BPF_64_32 / R_SBF_SYSCALL 等类型常量集中在 spec §7.3。
+
+
 
 
 
