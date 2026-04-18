@@ -88,6 +88,9 @@ zig build test -Doptimize=Debug    # 默认 testing allocator 检漏
 
 ## 3. 目录结构
 
+**当前实现**已经收口到 `src/` 内：fixture 通过 `@embedFile` 放在
+`src/testdata/`，跨模块集成测试集中在 `src/integration_test.zig`。
+
 ```
 src/
 ├── common/
@@ -100,23 +103,31 @@ src/
 ├── parse/...
 ├── ast/...
 ├── emit/...
-└── tests/
-    ├── integration.zig     ← L3 端到端
-    ├── fixtures.zig        ← 辅助：加载 fixture
-    └── golden/             ← shim 产物 golden file
-        ├── hello.shim.so
-        ├── noop.shim.so
-        ├── logonly.shim.so
-        ├── counter.shim.so
-        ├── vault.shim.so
-        ├── transfer-sol.shim.so
-        ├── pda-storage.shim.so
-        ├── escrow.shim.so
-        └── token-vault.shim.so
+├── integration_test.zig    ← L2/L3 真实 fixture 集成测试
+└── testdata/
+    ├── hello.o
+    ├── hello.shim.so
+    ├── noop.o
+    ├── noop.shim.so
+    ├── logonly.o
+    ├── logonly.shim.so
+    ├── counter.o
+    ├── counter.shim.so
+    ├── vault.o
+    ├── vault.shim.so
+    ├── transfer-sol.o
+    ├── transfer-sol.shim.so
+    ├── pda-storage.o
+    ├── pda-storage.shim.so
+    ├── escrow.o
+    ├── escrow.shim.so
+    ├── token-vault.o
+    └── token-vault.shim.so
 ```
 
 **Zig 约定**：单元测试用 `test "name" { ... }` 块，写在同文件底部。
-跨文件的集成测试放 `tests/` 目录。
+当前跨文件集成测试放在 `src/integration_test.zig`，而不是旧草案里的
+`tests/` 目录。
 
 ---
 
@@ -200,9 +211,9 @@ src/
 | 对 hello.o 调 `iterSymbols()`：包含 `entrypoint` 符号 | L2 | |
 | 对 hello.o 调 `iterRelocations(.text)`：1 个 R_BPF_64_64 | L2 | |
 
-**Fixtures**：测试需要的 .o 文件**不是**直接从 shim 生成——而是
-通过 `fixtures.zig` 调用 zignocchio 的 build 管道生成。首次运行 CI
-时会构建 fixtures 目录并缓存。
+**Fixtures**：当前仓库把真实 `.o` / `.shim.so` fixture 直接提交在
+`src/testdata/`。这些文件最初来自 zignocchio 构建管道 +
+`reference-shim` 输出，然后作为 golden 固化进仓库与 CI。
 
 ### 4.7 `parse/byteparser.zig`（关键）
 
@@ -284,41 +295,40 @@ example，这样失败时定位清晰。
 | `DynSymSection.bytecode()` 字节顺序对照 shim | L2 | |
 | **完整 emit**：对 hello 的 ParseResult → bytes，跟 shim `.so` cmp | L2 | 关键 |
 
-### 4.10 L3 端到端（`tests/integration.zig`）
+### 4.10 L3 端到端（`src/integration_test.zig`）
+
+当前实现不是运行时读 `tests/golden/`，而是把 9 组 golden fixture
+直接嵌进 `src/testdata/`，再由 `src/integration_test.zig` 循环验证：
 
 ```zig
-const examples = [_][]const u8{
-    "hello", "noop", "logonly",
-    "counter", "vault", "transfer-sol",
-    "pda-storage", "escrow", "token-vault",
+const Golden = struct {
+    name: []const u8,
+    input: []const u8,
+    shim_so: []const u8,
 };
 
-test "zig elf2sbpf matches shim output for all zignocchio examples" {
-    inline for (examples) |ex| {
-        const input_path = "tests/golden/" ++ ex ++ ".o";
-        const expected_path = "tests/golden/" ++ ex ++ ".shim.so";
+const goldens = [_]Golden{
+    .{ .name = "hello", .input = @embedFile("testdata/hello.o"), .shim_so = @embedFile("testdata/hello.shim.so") },
+    .{ .name = "noop", .input = @embedFile("testdata/noop.o"), .shim_so = @embedFile("testdata/noop.shim.so") },
+    // ... 其余 7 个 example
+};
 
-        const input = try std.Io.Dir.cwd().readFileAlloc(testing.io, input_path, testing.allocator, .limited(10 * 1024 * 1024));
-        defer testing.allocator.free(input);
-
-        const actual = try linker.linkProgram(testing.allocator, input);
+test "integration: 9 examples match reference-shim" {
+    inline for (goldens) |g| {
+        const actual = try runPipeline(testing.allocator, g.input);
         defer testing.allocator.free(actual);
-
-        const expected = try std.Io.Dir.cwd().readFileAlloc(testing.io, expected_path, testing.allocator, .limited(10 * 1024 * 1024));
-        defer testing.allocator.free(expected);
-
-        try testing.expectEqualSlices(u8, expected, actual);
+        try testing.expectEqualSlices(u8, g.shim_so, actual);
     }
 }
 ```
 
-**C1 MVP 验收就是这个测试全绿**。
+**C1 MVP 验收就是这个 loop 全绿**。
 
 ---
 
 ## 5. Fixtures 生成
 
-### 5.1 `tests/golden/*.o`（输入）
+### 5.1 `src/testdata/*.o`（输入）
 
 **生成方式**（来自 `scripts/validate-all.sh` 的现有逻辑）：
 
@@ -333,16 +343,16 @@ zig cc -target bpfel-freestanding -mcpu=v2 -O2 \
   -c <example>.bc -o <example>.o
 ```
 
-**脚本**：`scripts/make-golden.sh`（Phase 6 加）自动跑上面的命令，
-把 `.o` 拷到 `tests/golden/`。
+当前仓库没有单独的 `scripts/make-golden.sh`；golden 主要通过现有
+验证/构建脚本生成后，再人工拷入 `src/testdata/`。
 
-### 5.2 `tests/golden/*.shim.so`（期望输出）
+### 5.2 `src/testdata/*.shim.so`（期望输出）
 
 ```bash
-reference-shim/target/release/elf2sbpf-shim tests/golden/<name>.o tests/golden/<name>.shim.so
+reference-shim/target/release/elf2sbpf-shim src/testdata/<name>.o src/testdata/<name>.shim.so
 ```
 
-### 5.3 `tests/golden/*.parse_result.json`（中间产物）
+### 5.3 `*.parse_result.json`（中间产物，未来扩展）
 
 **当前状态**：`reference-shim` 还没有 `--dump-parse-result`。
 这部分 schema 先作为未来扩展草案保留；当前主验证路径仍是
@@ -376,23 +386,26 @@ reference-shim/target/release/elf2sbpf-shim tests/golden/<name>.o tests/golden/<
 
 ## 6. CI 配置
 
-### 6.1 本地 (`scripts/validate-zig.sh`)
+### 6.1 本地
 
 ```bash
-set -e
 zig build
-zig build test -Doptimize=ReleaseSafe
-./scripts/make-golden.sh     # 重建 fixtures（若缺）
-./scripts/validate-all.sh    # 对拍 shim vs zig
+zig build test --summary all
+./scripts/validate-zig.sh
 ```
 
-### 6.2 GitHub Actions（C2 加）
+### 6.2 GitHub Actions（当前已存在）
 
-- macOS arm64 + Linux x86_64 两个 runner
-- 装 Zig 0.16（用 mlugg/setup-zig action）
-- 装 Rust（编 reference-shim）
-- 跑 `validate-zig.sh`
-- PR 和 main push 都触发
+当前仓库已经有 `.github/workflows/ci.yml`：
+
+- macOS + Linux 矩阵
+- 固定 Zig 0.16.0
+- 跑 `zig build`
+- 跑 `zig build test --summary all`
+- 跑 hello CLI smoke test
+
+CI **不直接跑** `validate-zig.sh`，因为 9/9 对拍已经通过
+`src/testdata/` goldens 收敛进 `zig build test`。
 
 ---
 
@@ -474,7 +487,7 @@ test "murmur3_32 matches sol_log_ hash" { ... }
 - [x] 每个 Phase 3 的类型都有对应测试（Section 4）
 - [x] 每个 Phase 3 的边界条件都有对应测试（§4.7）
 - [x] 最终验收测试定义明确（§4.10 端到端）
-- [x] Fixture 生成脚本可复现（§5）
+- [x] Fixture 生成流程可复现（§5）
 - [x] Oracle 明确（shim 的 `.so` 和 JSON）
 
 测试规格完成后，**写任何实现代码前**必须先写对应的测试骨架。

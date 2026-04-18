@@ -131,12 +131,11 @@ pub const Instruction = struct {
     /// (ast.zig) resolves syscalls, imm becomes `.right(Number.Int(hash))`
     /// and this returns false.
     ///
-    /// Simplified version of Rust is_syscall (instruction.rs L52-59): Rust
-    /// consults a REGISTERED_SYSCALLS whitelist; we do not have the whitelist
-    /// yet (syscalls.zig lands in B.9). For C1, every unresolved Call label
-    /// is treated as a syscall candidate — byteparser only ever reaches this
-    /// with syscall-bound labels, so the under-check has no practical impact.
-    /// TODO(B.9): swap in the whitelist once syscalls.zig is ready.
+    /// Simplified version of Rust is_syscall (instruction.rs L52-59).
+    /// In the current C1 implementation:
+    ///   - `src == 0` means a resolved syscall-hash call
+    ///   - `.imm = .left(name)` means an unresolved symbolic syscall target
+    ///   - any other Call form is treated as a normal call / callx-style path
     pub fn isSyscall(self: Instruction) bool {
         if (self.opcode != .Call) return false;
         if (self.src) |src| {

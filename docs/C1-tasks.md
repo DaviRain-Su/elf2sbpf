@@ -93,10 +93,9 @@ test` 跑空测试。
   - **验收**：顶层结构匹配 architecture §3
 
 - [x] **A.3**：建测试 harness ✅ 2026-04-18
-  - `zig build test` 跑通 3/3 测试（2 个在 lib module，1 个在 exe module）
-  - `scripts/validate-zig.sh` 已补上为 `validate-all.sh` 的兼容入口；
-    真正的 9/9 绿灯仍要等 Epic I 完成
-  - **验收**：`zig build test --summary all` 全绿
+  - `zig build test` 跑通测试 harness，并在后续扩展到完整集成矩阵
+  - `scripts/validate-zig.sh` 已补上为 `validate-all.sh` 的兼容入口
+  - **验收**：当前 `zig build test --summary all` 全绿
 
 ---
 
