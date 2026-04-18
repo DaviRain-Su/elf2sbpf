@@ -16,16 +16,37 @@
 
 ---
 
-## 优先级排序（我的推荐）
+## 当前状态（2026-04-18 审查快照）
 
-| 优先级 | 任务 | 估时 | 理由 |
-|--------|------|------|------|
-| **P0** | **D.2 Debug info 保留** | 1-2 天 | 最小投入；`DebugSection` writer 已在 F.11 就位；只需接通 `Program::fromParseResult` 的 reuse 路径 + 一个带 debug 的测试 fixture。对 gdb/lldb 用户立即有价值 |
-| **P1** | **D.4 Zig 库 API** | 1 天 | 低风险、高 DX 价值；zignocchio PR 合并后会吸引 Zig 框架作者来用 elf2sbpf；把 `linkProgram` / `Program.fromParseResult` 等作为公开 API 抛出来 + build.zig.zon 支持 `zig fetch` |
-| **P2** | **D.3 Dynamic syscall relocation** | 1-2 天 | 把 `REGISTERED_SYSCALLS` 那个静态表换成 runtime-extensible；允许 zignocchio 框架 register 自己的 syscall |
-| **P3** | **D.1 SbpfArch V3 路径** | 1-2 周 | 最大投入；Solana runtime 主推 V3 时必须做；但 V0 短期不会被淘汰 |
-| **P4** | **D.5 Windows 支持** | 3-5 天 | Zig 本身跨平台；主要踩 path / file I/O 的坑；受众小 |
-| **战略** | **D.6 跨语言前端** | — | 等社区有人问再做（PRD 说"扩展自然发生，不是先做好等人来用"） |
+**已交付** —— 4 个子里程碑 4 个 release：
+
+| 子里程碑 | Release | 摘要 |
+|----------|---------|------|
+| D.2 Debug info 保留 | v0.2.0 | 8-name 白名单 pass-through；mini-debug golden |
+| D.4 Zig 库 API | v0.3.0 | `@import("elf2sbpf")` + `docs/library.md` |
+| D.3 Dynamic syscall | v0.4.0 | `linkProgramWithSyscalls` + thread_extra_syscalls |
+| D.1 SbpfArch V3 | v0.5.0 | 9/9 V3 goldens byte-match oracle |
+
+**未开始** —— 都在等生态触发：
+
+- **D.5 Windows**：等 Windows 用户提需求
+- **D.6 跨语言前端**：等"能不能让 C/Nim 程序也走这条"被问出来
+
+---
+
+## 做过的优先级排序（2026-04-18 初次规划时）
+
+下表是当时给出的推荐顺序 + 估时；实际走下来 D.1-D.4 都远低于估时，
+因为 C1 期就把"占位 if-else"打好了基础，D 阶段主要是接通 + 回归覆盖。
+
+| 优先级 | 任务 | 估时 | 实际 | 备注 |
+|--------|------|------|------|------|
+| P0 | D.2 Debug info | 1-2 天 | ~1.5h | 基础设施在 F.11 已就位 |
+| P1 | D.4 Zig 库 API | 1 天 | ~30min | `b.addModule` 在 C1-A 就打好；加文档 + verify |
+| P2 | D.3 Custom syscalls | 1-2 天 | ~30min | threadlocal + 6 测试 |
+| P3 | D.1 V3 arch | 1-2 周 | ~2h | 跟 4 个 V3-specific bug 斗智斗勇 |
+| P4 | D.5 Windows | 3-5 天 | — | 未做 |
+| 战略 | D.6 跨语言 | — | — | 未做 |
 
 ---
 

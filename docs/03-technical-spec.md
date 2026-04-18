@@ -24,13 +24,15 @@
 ### 1.1 CLI（`main.zig` 暴露）
 
 ```
-elf2sbpf <input.o> <output.so>
+elf2sbpf [--v0 | --v3] <input.o> <output.so>
 ```
 
 | 参数 | 类型 | 必需 | 说明 |
 |------|------|------|------|
 | `<input.o>` | 路径 | 是 | BPF ELF 目标文件 |
 | `<output.so>` | 路径 | 是 | 输出 Solana SBPF 程序 |
+| `--v0` | flag | 否 | 选 SBPF V0 输出（默认） |
+| `--v3` | flag | 否 | 选 SBPF V3 输出（自 v0.5.0） |
 
 **退出码**：
 
@@ -46,20 +48,37 @@ elf2sbpf <input.o> <output.so>
 ### 1.2 库入口（`lib.zig` 暴露）
 
 ```zig
-pub const linker = @import("lib.zig");
+const elf2sbpf = @import("elf2sbpf");
 
+// V0 默认（与 v0.1 兼容）
 pub fn linkProgram(
     allocator: std.mem.Allocator,
     elf_bytes: []const u8,
 ) LinkError![]u8;
+
+// V3 显式入口（自 v0.5.0）
+pub fn linkProgramV3(
+    allocator: std.mem.Allocator,
+    elf_bytes: []const u8,
+) LinkError![]u8;
+
+// 注册额外的自定义 syscall 名字（自 v0.4.0）。传空切片等价于 linkProgram。
+pub fn linkProgramWithSyscalls(
+    allocator: std.mem.Allocator,
+    elf_bytes: []const u8,
+    extra_syscalls: []const []const u8,
+) LinkError![]u8;
 ```
 
-**契约**：
+**契约**（对三个入口都适用）：
 
 - **输入前置**：`elf_bytes` 是有效的 BPF ELF64 little-endian（不满足返回 `InvalidElf`）
 - **输出后置**：返回的 `[]u8` 所有权转给调用方，调用方负责 `allocator.free`
 - **失败语义**：任何失败都返回 `LinkError` 成员，不 `panic`
-- **纯函数**：同一输入多次调用产物相同
+- **纯函数**：同一输入 + 同一 arch/extras 多次调用产物相同
+- **线程安全**：`linkProgramWithSyscalls` 用 threadlocal 存 extras，
+  多线程并发调用各线程独立；save/restore 支持嵌套调用
+- **稳定性**：v0.x SemVer 契约；详见 `docs/library.md`
 
 ### 1.3 错误集合
 

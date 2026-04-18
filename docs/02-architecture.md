@@ -13,8 +13,9 @@ elf2sbpf 的架构**必须**同时满足：
 1. **零 LLVM 依赖**：elf2sbpf 本身不链接 libLLVM，不引 LLVM FFI
 2. **语言无关的输入面**：输入是标准 BPF ELF，不绑定具体上游编译器
 3. **与 Rust `sbpf-linker` 的 stage 2 字节级等价**：对合法输入，
-   产物跟 `reference-shim` 按字节一致（3 个 zignocchio example
-   保证；其余 6 个结构等价即可）
+   产物跟 `reference-shim` **全部字节一致**（实际达成：9/9
+   zignocchio example 在 V0 和 V3 两种 arch 下都 byte-identical
+   to oracle；见 `docs/07-review-report.md`）
 4. **Zig 0.16 单个二进制**：静态编译、跨 macOS/Linux 可运行
 
 这 4 条是**架构的硬约束**，技术规格里的所有决策必须不违反这些约束。

@@ -1,6 +1,6 @@
 # elf2sbpf — 产品需求文档（PRD）
 
-**状态**：C1 MVP 已达成（待收尾）
+**状态**：C1 + C2 + D 全部交付；v0.5.0 已发。项目处于 stable pre-1.0
 **最后更新**：2026-04-18
 
 ---
@@ -203,16 +203,13 @@ zig cc（被调用，不是被链接）
 
 - 已经深度使用 Rust Solana 工具链的团队——他们用现成的
   `sbpf-linker` 即可，elf2sbpf 对他们无增量价值
-- 需要 Debug info、V3 特性、自定义 LLVM pass 的高级用户——
-  这些特性在 C1 范围外
+- 需要自定义 LLVM pass 的高级用户——这条路径我们不接
 
 ---
 
 ## 4. 产品定位
 
-### In Scope（C1 MVP）
-
-下面这些目标已在当前分支达成：
+### In Scope — C1 MVP（v0.1.0，2026-04-18）
 
 - ✅ 把 sbpf-linker 的 stage 2 逻辑完整 port 到 Zig
 - ✅ SbpfArch V0 支持
@@ -224,58 +221,61 @@ zig cc（被调用，不是被链接）
 - ✅ CLI 工具（`elf2sbpf input.o output.so`）
 - ✅ zignocchio 9/9 example 跟 shim 字节一致
 
-### Out of Scope（推迟到 C2 或 D 阶段）
+### Out of Scope in C1 → 已在 D 阶段补齐
 
-- ❌ SbpfArch V3 路径
-- ❌ Debug info（`.debug_*`）保留
-- ❌ 动态 syscall relocation（目前只做静态 murmur3 注入）
+| 项目 | 当时决定 | 实际完成 |
+|------|----------|----------|
+| Debug info（`.debug_*`）保留 | C1 外 | ✅ v0.2.0（D.2） |
+| 作为库被其他 Zig 程序 import | C1 外 | ✅ v0.3.0（D.4；`linkProgram*` + `docs/library.md`） |
+| 动态 syscall relocation（runtime 扩展） | C1 只做静态 | ✅ v0.4.0（D.3；`thread_extra_syscalls` + `linkProgramWithSyscalls`） |
+| SbpfArch V3 路径 | C1 外 | ✅ v0.5.0（D.1；9/9 V3 goldens byte-match） |
+
+### Out of Scope（仍然不做）
+
 - ❌ 多 translation unit LTO（委托给 `zig cc` / 上游编译器）
-- ❌ 作为库被其他 Zig 程序 import（先做 CLI）
 - ❌ 写方（emit 的 rodata 字节）的优化（如字符串去重、合并）
+- ❌ 汇编文本 parser（`.sbpf` 源码 → bytecode）—— 我们只接 ELF，不接汇编文本
+- ❌ DWARF synthesis（从 DebugData 合成 debug section）—— 只 reuse，不生成
+- ❌ BPF 字节码验证器 / VM 执行器 —— 我们是 linker，不是 runtime
 
 ### 非目标（明确不做）
 
 - ❌ **不做**替代 `sbpf-linker` 的完整功能。我们不嵌 LLVM，不做
   LLVM pass，不做 bitcode 链接。
 - ❌ **不做**对 LLVM 版本的追踪和适配
-- ❌ **不做**跨平台 / Windows 支持（先 macOS / Linux）
+- ❌ **不做** Windows 支持（先 macOS / Linux；等用户报需求再考虑）
 
 ---
 
 ## 5. 成功标准
 
-### C1 MVP 通过标准
+### C1 MVP 通过标准 —— 已全部达成（v0.1.0）
 
-**当前状态**：截至 2026-04-18，构建、测试和 9/9 shim 对拍已通过；
-CI / 发布整理仍属于收尾事项。
+| 标准 | 达成情况 |
+|------|---------|
+| `zig build` 在 macOS arm64 + Linux x86_64 产出静态二进制 | ✅ CI 双平台 matrix 绿 |
+| 9 个 zignocchio example byte-identical to reference-shim | ✅ V0 10/10（含 mini-debug 固定件），V3 9/9 |
+| 性能 < 100ms/example | ✅（V0 hello.o < 20ms） |
+| 通过 `zig fmt` 检查 | ✅ CI 强制 |
+| 无 memory leak（`std.testing.allocator` GPA 检测） | ✅ 378/378 tests 全绿 |
+| 无 runtime panic（合法输入）+ overflow-safe bounds（恶意输入）| ✅ phase 4 审查过，零 `@panic` / `unreachable` / `ptrCast` |
+| Public API 单元测试覆盖 | ✅ `linkProgram*` 三种入口都有 error-path 测 |
 
-**必须（MUST）**：
+**超出 MUST 的补充**：
+- fuzz-lite 回归防线：160/160 MATCH
+- GitHub Actions 自动 release workflow：tag push 即出 artifact
+- Bilingual docs（README / CHANGELOG / install / pipeline / decisions 各有 zh/en 版）
+- 7 阶段 dev-lifecycle 审查报告（`docs/07-review-report.md`）
 
-1. 构建：`zig build` 在 macOS aarch64 和 Linux x86_64 上成功产出
-   `elf2sbpf` 静态二进制
-2. 功能：对 zignocchio 9 个 example 走 `zig cc` bridge 管道产出
-   的 `.o`，elf2sbpf 产出的 `.so` 与 Rust `reference-shim` 产出
-   的 `.so` **字节完全一致**
-3. 性能：单个 example 处理 < 100ms（shim 是 ~10ms，不求一样快
-   但同数量级）
-4. 代码质量：
-   - 通过 `zig fmt` 检查
-   - 无 memory leak（GPA 跑测试时报告）
-   - 无 runtime panic（对合法 BPF ELF 输入）
-   - 覆盖率：所有 public API 都有单元测试
+### C1 → v0.5.0 交付物累计
 
-**不要求（NICE TO HAVE）**：
-
-- 跟现有 `sbpf-linker` 的 bitcode 管道产物字节一致（因为它多跑一
-  次 LLVM 优化，不可能字节完全一样，也不需要）
-
-### C1 完成的交付物
-
-1. `/Users/davirian/dev/active/elf2sbpf/` 下的 Zig 项目
-2. `elf2sbpf` 二进制能直接跑
-3. 所有 9 个 zignocchio example 的对拍脚本跑绿 ✅
-4. 项目 README 更新到 C1 完成状态 ✅
-5. zignocchio 的 `build.zig` 草稿（展示如何接入 elf2sbpf，留作后续收尾项）
+1. Zig 项目 ✅
+2. `elf2sbpf` CLI ✅（`--v0` / `--v3` flag）
+3. 9/9 对拍脚本（`validate-zig.sh`）+ 10/10 + 9/9 committed goldens
+4. README / install.md / library.md / pipeline.md（+ zh 镜像）跟 v0.5.0 对齐 ✅
+5. zignocchio 上游 Draft PR（Solana-ZH/zignocchio#1）
+6. Zig 库 API + `docs/library.md` 稳定性契约
+7. 5 份 GitHub Release（v0.1/v0.2/v0.3/v0.4/v0.5），每份带 3 平台预编译二进制 + SHA256SUMS
 
 ---
 
@@ -357,44 +357,50 @@ elf2sbpf/
 - 验证 `zig cc` bridge 能解栈大小问题
 - 产物：`reference-shim`（Rust）+ 验证脚本 + 本 PRD
 
-### C1 — Zig MVP 移植
+### C1 — Zig MVP 移植 ✅ 已完成（v0.1.0，2026-04-18）
 
-**目标**：把 stage 2 完整 port 成 Zig，9/9 zignocchio example 字节
-一致。
+**目标**：把 stage 2 完整 port 成 Zig，9/9 zignocchio example 字节一致。
 
-**预估**：6-8 周单人全职（按任务清单拆解）
+**实际**：1 天跑完。产出 9/9 byte-match + 362 tests + CI。详见
+`docs/C1-tasks.md` + `docs/06-implementation-log.md`。
 
-**交付**：
-- 可工作的 `elf2sbpf` Zig 二进制
-- 对拍测试 9/9 通过
-- zignocchio 改造 PR 草稿
-
-### C2 — 集成 & 上游
+### C2 — 集成 & 上游 ✅ 已完成（v0.1.0 收尾，2026-04-18）
 
 **目标**：让 zignocchio 默认用 elf2sbpf，消除 Rust 工具链依赖。
 
-**预估**：1-2 周
-
 **交付**：
-- 合并 zignocchio `build.zig` 改造
-- 更新 zignocchio README 和安装文档
-- （可选）删除 `reference-shim/` 目录
-- （可选）给 blueshift-gg/sbpf 提 issue 报 byteparser rodata 限制
+- ✅ fuzz-lite 回归防线（160/160 MATCH）
+- ✅ `docs/integrations/zignocchio-build.zig` 集成草稿 + 上游 Draft PR
+  [Solana-ZH/zignocchio#1](https://github.com/Solana-ZH/zignocchio/pull/1)
+- ✅ README / install.md / library.md / pipeline.md / LICENSE / CHANGELOG
+  都就位（中英双语）
+- ✅ GitHub Actions CI + release workflow
+- ✅ ADR-001 决定不做 litesvm 运行时验证（字节对等传递覆盖 runtime）
+- ✅ ADR-002 决定保留 `reference-shim/` 作 oracle
+- ❌ blueshift-gg/sbpf 的 rodata issue（用户决定不开）
 
-### D — 功能扩展（按需）
+详见 `docs/C2-tasks.md`。
 
-**目标**：补足 out-of-scope 的功能 + 长期战略愿景。
+### D — 功能扩展 ✅ 主要项目已落地
 
-**可能的子里程碑**：
+| 子里程碑 | 状态 | 交付版本 |
+|----------|------|----------|
+| D.1 SbpfArch V3 | ✅ | v0.5.0 |
+| D.2 Debug info 保留 | ✅ | v0.2.0 |
+| D.3 Dynamic syscall relocation | ✅ | v0.4.0 |
+| D.4 elf2sbpf 作为 Zig 库 import | ✅ | v0.3.0 |
+| D.5 Windows 支持 | 等用户需求 | — |
+| D.6 跨语言 Solana 构建工具（战略愿景） | 等生态触发 | — |
 
-- D.1：SbpfArch V3 支持（当 Solana runtime 主推 V3 时再做）
-- D.2：Debug info 保留
-- D.3：Dynamic syscall relocation
-- D.4：elf2sbpf 作为 Zig 库 import
-- D.5：Windows 支持
-- **D.6：跨语言 Solana 构建工具（战略愿景）** —— 详见下节
+从 v0.1.0 到 v0.5.0 共 **5 个 minor release**。详见 `docs/D-tasks.md`。
 
-无固定时间表，按生态需求驱动。
+### 审查阶段（2026-04-18）
+
+在 D 全部 shipped 之后做了一轮 7-phase 全面审查，详见 `docs/07-review-report.md`：
+
+- Phase 1-5：代码 hygiene / 文档新鲜度 / 测试覆盖 / 健壮性 / 打包发布
+- Phase 6：Rust 特性对等矩阵（发现并修复 2 处 latent semantic 漂移）
+- Phase 7：PRD + 内部规划文档新鲜度（本轮）
 
 ### D.6 — 跨语言 Solana 构建工具（战略愿景）
 

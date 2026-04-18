@@ -3,9 +3,10 @@
 **目标**：把 sbpf-linker 的 stage 2 完整 port 成 Zig，9/9 zignocchio
 example 跟 `reference-shim` 字节一致。
 
-**当前状态**：这个核心目标已在 2026-04-18 达成（`validate-zig.sh`
-9/9 全绿）。本清单剩余未勾选项主要是 CI、golden fixture、文档和
-后续集成收尾。
+**当前状态**：✅ **C1 完整达成并封版为 v0.1.0**（2026-04-18）。
+`validate-zig.sh` 9/9 全绿；CI / golden fixture / zignocchio 上游
+PR / 所有 release 工件都已到位。本文档保留作为**历史记录**，反映
+v0.1.0 当时的任务拆解形态。后续 D 阶段工作见 `docs/D-tasks.md`。
 
 **预估**：6-8 周单人全职，约 40-55 工作日。
 
