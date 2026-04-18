@@ -1579,6 +1579,131 @@ Epic D 的产物已经把所有**输入端信息**整理好，E/F/G 不再碰 EL
 （Label / Instruction / ROData / GlobalDecl）+ Label/ROData/GlobalDecl
 子结构体。比 D 的逻辑简单——主要是类型建模工作。
 
+---
+
+## C1-E.1 — AST 节点类型建模
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 做的事
+
+- `src/ast/node.zig`：4-variant tagged union（Label / Instruction / ROData / GlobalDecl）
+- 子结构 `Label { name, span }` / `ROData { name, bytes, span }` / `GlobalDecl { entry_label, span }`
+- Helper：`isTextNode` / `isRodataNode` / `offset() ?u64`
+
+### 设计偏离 Rust
+
+`ROData.bytes` 用 `[]const u8` 而不是 Rust 版的 `Vec<Number>`。
+Rust 为了跟 assembler 文本字面量保持对称，byteparser 产出的 rodata
+也被包装成 Number tagged union。我们只走 byteparser 不走 text
+parser，字节就是字节。如果 D 阶段 port 文本 parser 再说。
+
+### 验收
+
+- 6 单测（每 variant 构造 + 分类 + 字段访问）
+- 113/113 全绿
+
+---
+
+## C1-E.2 — AST 结构 + 查询 API
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 做的事
+
+- `src/ast/ast.zig` 的 owner 部分：`AST { allocator, nodes, rodata_nodes, text_size, rodata_size }`
+- init/deinit/setTextSize/setRodataSize/pushNode/pushRodataNode
+- `getInstructionAtOffset(offset) ?*Instruction` —— 返回可变指针，E.3 就地改写
+- `getRodataAtOffset(offset) ?*ROData`
+- `SbpfArch { V0, V3 }` enum
+
+### 副产品：清理两个脆弱测试
+
+本任务过程中发现 byteparser 里有两个 linter 自动加的 synthetic-ELF
+测试（基于 `makeRelaLddwElf`），fixture 布局脆，小改动就坏。删了，
+因为对应代码路径已经有 hello.o 真数据测试 + unit test 覆盖。
+
+### 验收
+
+- 5 单测（init/setSize/push/find with mutation/find null）
+- 118/118 全绿
+
+---
+
+## C1-E.3 — AST.buildProgram V0 路径
+
+**日期**：2026-04-18
+**状态**：✅ 完成（Epic E 收尾）
+
+### 做的事
+
+Epic E 的核心 pass。把 AST 变成可供 emit layer 消费的 ParseResult。
+分 7 个 sub-pass（A-G），严格按 Rust ast.rs L109-275 port：
+
+| Sub-pass | 做什么 |
+|----------|--------|
+| **A** | `label_offset_map` + numeric label tracking（给 1f/2b 用） |
+| **B** | `prog_is_static` 判定（V3 总静态；V0 静态当且仅当**无 syscall 且无符号 lddw**） |
+| **C** | Syscall 注入（V0 动态：src=1/imm=-1 + rel.dyn + dynsym；V3 静态：src=0/imm=hash） |
+| **D** | Jump/Call label → 相对 offset `(target-current)/8 - 1` |
+| **E** | Lddw label → 绝对地址（V0: `target + ph_offset`，ph_count=1 或 3；V3: `target - text_size`） |
+| **F** | Entry point 收集到 dynamic_symbols |
+| **G** | 移交 nodes 到 ParseResult（move semantics） |
+
+### 新引入的类型（bridge to Epic F）
+
+- `ParseResult` + `CodeSection` + `DataSection`
+- `DynamicSymbolMap` + `DynamicSymbolEntry` + `addCallTarget/addEntryPoint`
+- `RelDynMap` + `RelocationEntry` + `RelocationType { RSbfSyscall, RSbf64Relative }`
+- `DebugSection`
+- `BuildProgramError { OutOfMemory, UndefinedLabel }`
+
+### 规格修订：Phase B 的 lddw 检查
+
+Phase B 初版只检查 syscall。但按 Rust ast.rs L135-140 严格定义，
+只要存在符号 lddw（`opcode == Lddw && imm is Left`）也需要 .rel.dyn
+（因为 V0 lddw 绝对地址要 `R_SBF_64_RELATIVE` 做 load-time 重定位）。
+测试先是错的期望（`prog_is_static == true`），然后改期望
+（`prog_is_static == false`）——发现根本问题在 Phase B 漏检 lddw，
+补上。
+
+### Zig vs Rust 实现差异
+
+- Rust `std::mem::take(&mut self.nodes)` → Zig 手动 `const code_nodes = self.nodes; self.nodes = .empty;`
+- Rust 的 `HashMap<String, u64>` → Zig `StringHashMap(u64)` with `.init(alloc)` / `.deinit()`
+- 所有 ArrayList/HashMap 操作都显式传 allocator
+
+### 验收
+
+- 124/124 tests 全绿
+- V0 静态路径（无 syscall/lddw）
+- V0 动态路径（lddw 触发 .rel.dyn + ph_count=3）
+- label resolution（jumps + calls）
+- entry_point 提取
+- undefined label 错误路径
+
+### Epic E 状态
+
+- E.1 ✅
+- E.2 ✅
+- E.3 ✅
+- E.4 ✅（随 E.3 一并算完成——byteparser-to-buildProgram 的端到端
+  留给 Epic F 自然串起来）
+- **Epic E: 4/4 ✅**
+
+### 下一任务
+
+**Epic F — ELF 输出层**。12 个任务，主要是 Solana 特有的 ELF header、
+program headers、各种 section（Code/Data/DynSym/DynStr/Dynamic/RelDyn/
+ShStrTab/Debug）的字节序列化。Rust sbpf-assembler 的 `section.rs`
+(1085 行) + `header.rs` + `dynsym.rs` 的 port。
+
+从 F.1 起手：`ElfHeader` 64-byte struct + Solana 常量（SOLANA_IDENT /
+ET_DYN / EM_BPF）。
+
+
 
 
 
