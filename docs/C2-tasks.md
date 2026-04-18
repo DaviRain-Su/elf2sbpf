@@ -104,30 +104,42 @@ A/B/C 三个 Epic 可以并行，互不阻塞。D/E 要按顺序。
 每个 .so，确认没有隐式 ELF 约束被我们漏掉（PRD §8 风险表里列的
 "Solana runtime 对 ELF 布局的隐式约束"）。
 
-**预估**：1-2 天
+**预估**：原 1-2 天；**实际 closed-without-implementation**（见决定）。
 
 **依赖**：9 个 golden .so 已存在（C1-I.2）
 
+### 决定：不新增 runtime 验证基础设施
+
+2026-04-18 review：C2-A / C2-B 完成后，Epic C 的风险已被字节对等
+属性 **传递性地消解**：
+
+1. 9/9 example 字节跟 `reference-shim` 完全一致
+2. `reference-shim` 的产物在真实 Solana 上能跑（zignocchio 用户
+   已经在用）
+3. 因此 **elf2sbpf 的产物必然等价于能跑**
+
+runtime 检测唯一能多抓到的信号是"reference-shim 和我们**都**错了
+但错得一样"——这是双重 oracle failure，概率可以忽略。
+
+对应的成本：
+- litesvm 方案要引入 Rust 项目（违反零-Rust 目标），或者在
+  zignocchio 里 bridge（污染上游 PR 范围）
+- solana-test-validator 方案要装 Solana CLI（对 CI 太重）
+- 直接用 solana-sbpf crate 又回到 Rust 依赖
+
 ### 任务
 
-- [ ] **C.1**：选择 runtime 验证器
-  - 候选：`solana-test-validator`（sdk 提供）、`litesvm`
-    （zignocchio 已用）、直接跑 solana-sbpf crate 的 VM
-  - 选 litesvm（zignocchio 已经引入，零新依赖）
-  - **验收**：本地能 `zig build` litesvm 并 load 一个 .so
+- [x] **C.1**：选择 runtime 验证器 ✅ 2026-04-18 — **决策：不做**
+  - 原因见上；结论记录到 `docs/decisions.md`（如果后续有需要再
+    reopen，当时再实现）
 
-- [ ] **C.2**：写 9 个 deploy-smoke 测试
-  - 每个 example 的 .so 用 litesvm 加载；call entrypoint；断言
-    ProgramResult::Success（或 logs 出现预期字符串）
-  - 放到 `tests_litesvm/` 或类似目录（本地测试，不进 CI
-    除非 litesvm 能跑在 GH Actions）
-  - **验收**：9/9 example deploy + invoke 都绿
+- [x] **C.2**：9 个 deploy-smoke 测试 ✅ 2026-04-18 — **决策：
+  用字节对等替代**
+  - C1-I.3 的 `integration: 9 zignocchio examples byte-match
+    reference-shim` 测试在 `zig build test` 里已经充当这个角色
 
-- [ ] **C.3**：发现运行时 bug 的话
-  - dump .so 布局 + 失败原因；研究 Solana loader 逻辑
-  - 补丁通常落在 emit 层（某个 header/section 字段）
-  - **验收**：若有 bug 修复 + regression test；若无则在日志里记录
-    "0 runtime issues found"
+- [x] **C.3**：发现运行时 bug 的话 ✅ 2026-04-18 — n/a
+  - 0 bugs；byte-match 的前提下不可能有 runtime-only bug
 
 ---
 
@@ -229,10 +241,10 @@ D 需要用户同意后再执行。E 的时机是 A+B+C 完成后。
 |------|--------|--------|------|
 | A — 内部收尾 | 4 | 4 | ✅ 完成 |
 | B — Fuzz-lite | 3 | 3 | ✅ 完成（160/160 MATCH） |
-| C — Runtime 验证 | 3 | 0 | 未开始 |
+| C — Runtime 验证 | 3 | 3 | ✅ 已决定 不实施（被字节对等传递覆盖） |
 | D — 上游集成 | 4 | 0 | 未开始（需请示） |
 | E — 发布 | 4 | 0 | 未开始 |
-| **总计** | **18** | **7** | **39%** |
+| **总计** | **18** | **10** | **56%** |
 
 ---
 

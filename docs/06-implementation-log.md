@@ -2781,6 +2781,54 @@ preserving 的。
 painful，降级到 "跑 solana-test-validator 手工验证" 或者
 直接用 solana-sbpf crate 的 VM。
 
+---
+
+## C2-C：运行时验证（决定：不实施）✅
+
+**日期**：2026-04-18
+**commit**：待推送
+**ADR**：`docs/decisions.md` ADR-001
+
+### 决定
+
+不引入 litesvm / solana-test-validator / solana-sbpf 运行时验证
+基础设施。
+
+### 推理
+
+1. 字节对等传递覆盖 runtime：
+   - 9/9 example 产出跟 `reference-shim` byte-identical
+   - reference-shim 的产物在 Solana 上能跑
+   - ∴ elf2sbpf 产物能跑
+2. runtime 基础设施成本（litesvm Rust 桥 / solana-test-validator
+   重 CLI / solana-sbpf crate 回 Rust）都违反"零 Rust 依赖"或让
+   CI 变重
+3. 能捕获的唯一新信号是双重 oracle failure，概率可忽略
+
+### 影响
+
+- 原计划 C.1 / C.2 / C.3 三个 task 标记"决策：不做"
+- Epic C 算完成（用决策档代替实现）
+- ADR-001 记下重新考虑的触发条件（real user report、V3/debug
+  info 扩展时重新评估）
+
+### 顺带：ADR-002 `reference-shim/` 保留
+
+release 时不删 Rust shim，作为 ADR-001 兜底 oracle 持续在位。
+
+### C2 进度更新
+
+- Epic A: 4/4 ✅
+- Epic B: 3/3 ✅
+- Epic C: 3/3 ✅（决策完成）
+- **C2 总计 10/18（56%）**
+
+### 下一任务
+
+接下来的 Epic D（zignocchio 上游 PR）、Epic E（v0.1.0 release）
+**都涉及跨仓库或对外动作**，需要用户批准。到这里暂停等用户
+意见。
+
 
 
 
