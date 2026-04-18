@@ -705,6 +705,33 @@ test "buildProgram: syscall injection V0" {
     try testing.expectEqualStrings("sol_log_", pr.dynamic_symbols.entries.items[0].name);
 }
 
+test "buildProgram: syscall injection V3 uses hash imm and src=0" {
+    var ast = AST.init(testing.allocator);
+    defer ast.deinit();
+    ast.setTextSize(8);
+
+    const call_inst = instruction_mod.Instruction{
+        .opcode = .Call,
+        .dst = null,
+        .src = null,
+        .off = null,
+        .imm = .{ .left = "sol_log_" },
+        .span = .{ .start = 0, .end = 8 },
+    };
+    try ast.pushNode(.{ .Instruction = .{ .instruction = call_inst, .offset = 0 } });
+
+    var pr = try ast.buildProgram(.V3, &.{});
+    defer pr.deinit(testing.allocator);
+
+    const inst = pr.code_section.nodes.items[0].Instruction.instruction;
+    try testing.expectEqual(@as(u8, 0), inst.src.?.n);
+    try testing.expect(inst.imm.? == .right);
+    try testing.expectEqual(@as(i64, @intCast(syscall_mod.murmur3_32("sol_log_"))), inst.imm.?.right.Int);
+    try testing.expectEqual(@as(usize, 0), pr.relocation_data.entries.items.len);
+    try testing.expectEqual(@as(usize, 0), pr.dynamic_symbols.entries.items.len);
+    try testing.expect(pr.prog_is_static);
+}
+
 test "buildProgram: ordinary symbolic call resolves as relative call" {
     var ast = AST.init(testing.allocator);
     defer ast.deinit();
