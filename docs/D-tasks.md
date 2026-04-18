@@ -396,7 +396,7 @@ gap 基本都来自这里。
 | D.4 Zig 库 API | ✅ 完成，v0.3.0 已发 |
 | D.5 Windows | 未开始（等用户报需求） |
 | D.6 跨语言前端 | 战略愿景，不排期 |
-| **D.7 字节码层优化** | 路线图就位，D.7.10 V1 detector + V2.0 rewriter（非交织）+ V2.1 super-cluster 交织重写 + V2.1a token miscompile 修复全部已落；V2.2 liveness / 多 pass 未排期 |
+| **D.7 字节码层优化** | 路线图就位，D.7.10 V1-V2.2 已全部落（V1 detector / V2.0 非交织 / V2.1 super-cluster / V2.1a miscompile 修复 / V2.2 store peephole）；V2.3 small-int loads / V2.4 memcpy recognition 未排期 |
 
 ---
 

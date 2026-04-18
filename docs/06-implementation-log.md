@@ -3369,6 +3369,78 @@ unused helpers），新增 ~15 行统一路径。
 - 9 个 V0 solana-zig goldens 默认路径字节对等 100% 保留
 - solana-program-rosetta 5 个程序（含 token 6 op）全部 pass
 
+---
+
+## D.7.10 V2.2 — Unaligned u64 STORE rewriter ✅
+
+**日期**：2026-04-18
+**状态**：✅ 完成。token `initialize_mint` CU -27%。
+
+### 前置
+
+V2.1a 把 load 侧 gap 闭合完，token 仍留 2-3× gap。disassembly 显示
+大头是 bpfel 对 `store i64 align 1` 的展开（21 insns = 7×mov + 7×rsh
++ 8×stxb，对称于 V2.1 的 load pattern）。token 的 `Pubkey`/u64 字段
+写回 account data 全走这条路径。V2.2 加 store 侧 peephole。
+
+### 做的事
+
+**`src/ast/peephole.zig` 新增 ~350 行**：
+
+- **`Stxb8Group`**：parallel 到 `Ldxb8Group`，额外带 `source_reg`
+- **`scanStores`**：
+  - 收集全部 Stxb；按 `(base_reg, offset, node_idx)` 排序
+  - 8 个连续 offsets 组成 candidate
+  - 40-insn locality guard（同 V2.1）
+- **`traceStoreSource`**：从每个 stxb 往回走最多 8 条指令，追踪
+  value 寄存器的来源：
+  - `mov rX, rY` → rY 是 source
+  - `rsh rX, N` → 继续往回走找 mov（不 early-return）
+  - 无 mov/rsh → val_reg 本身是 source（byte-0 直存）
+  - 只有 rsh → val_reg 本身是 source（byte-1 in-place shift）
+  - 8 个 stxb 都必须同意同一个 source
+- **`applyStoreRewrite`**：删除 `[first_idx..span_end]` 全部节点，
+  插入 `stxdw [base+offset], source`；renumber offsets 同 V2.1
+- **Liveness 安全**：检查 span 后面第一条指令是否覆写 source_reg
+  （原 pattern 末尾的 `rsh rSource, 8` 会污染 source_reg；如果下一
+  条就重新赋值 source_reg，rsh 副作用是死的，安全删除）
+
+**`src/lib.zig`**：`linkProgramOptimized` 在 `rewriteAll` 之后加跑
+`rewriteStores`（两步 pipeline）。
+
+### 遇到的问题 + 解决
+
+**Bug：`traceStoreSource` 早返回**
+
+第一版遇到 `rsh rX, N` 就返回 `val_reg` 作为 source。但 bpfel 的
+字节 2-7 pattern 是：
+```
+mov rScratch, rSource    ← 应该找到这个得到 rSource
+rsh rScratch, N*8        ← 往回走先看到这个
+stxb [base+N], rScratch  ← 起点
+```
+早返回时得到 `rScratch`（scratch reg），8 个 stxb 的 source 都不一
+致，整个 cluster 被拒。解决：遇到 rsh 继续往回走找 mov。只有走完
+窗口还没遇到 mov 时，val_reg 才是 source（对应 byte-0 / byte-1
+in-place）。
+
+### 实测
+
+- `.so` 体积从 28016 → 17552（-10464 bytes = **-1308 insns**）
+- stxb count: 251 → 172（-79 = 9-10 个 store pattern 被压缩）
+- stxdw count: 109 → 113（+4；剩下的字节级 stxb 不是完整 8-byte
+  cluster，可能是 byte-wise struct 字段写）
+- **token initialize_mint: 474 → 348 CU（-27%）**
+- 其它 5 个 token op CU 不变（它们的 u64 写应该已经在 aligned
+  offset，走 stxdw 而不是 byte-wise 展开，所以没给我们 pattern）
+- helloworld/transfer/pubkey/cpi：CU 全部持 V2.1 水平（没变差）
+- 398/398 tests pass；9 个 V0 goldens 默认路径字节对等保留
+
+### 规格修订
+
+无破坏变更。`linkProgramOptimized` 行为扩展（之前只做 load，现在
+load + store 都做）；默认路径 / 其它公开 API 不变。
+
 
 
 

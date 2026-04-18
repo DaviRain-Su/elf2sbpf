@@ -249,6 +249,9 @@ fn linkProgramArchOpts(
         _ = peephole.rewriteAll(allocator, &ast_val) catch |e| switch (e) {
             error.OutOfMemory => return LinkError.OutOfMemory,
         };
+        _ = peephole.rewriteStores(allocator, &ast_val) catch |e| switch (e) {
+            error.OutOfMemory => return LinkError.OutOfMemory,
+        };
     }
 
     // Convert ByteParseResult.debug (DebugScan) → []ast.DebugSection.

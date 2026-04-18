@@ -817,6 +817,470 @@ pub fn rewriteAll(
 }
 
 // ---------------------------------------------------------------------
+// V2.2 store rewriter — unaligned u64 store coalescing
+// ---------------------------------------------------------------------
+//
+// bpfel `-O2` lowers `store i64 align 1` to a 21-instruction sequence
+// that extracts each byte from the source u64 and writes it via stxb.
+// Canonical shape:
+//
+//     mov     rScratch, rSource          \ for bytes 2..7
+//     rsh64   rScratch, (7-i) * 8        |   (6 triples,
+//     stxb    [rBase + i], wScratch       /    i = 7..2)
+//     stxb    [rBase + 0], wSource       ; byte 0 — direct
+//     rsh64   rSource, 8                 ; byte 1 — mutates rSource
+//     stxb    [rBase + 1], wSource
+//
+// We collapse all 21 ops into a single `stxdw [rBase + 0], rSource`
+// after verifying:
+//   - 8 stxb with same base_reg + consecutive offsets [N..N+7]
+//   - every byte's source register traces back to the same rSource
+//     via `mov rX, rSource` (+ optional `rsh rX, imm`) — or is
+//     rSource itself (byte 0 / byte 1 direct paths)
+//   - rSource is reassigned by the instruction immediately after the
+//     pattern (so the lost `rsh rSource, 8` side-effect is dead)
+
+pub const Stxb8Group = struct {
+    base_reg: u8,
+    base_offset: i16,
+    source_reg: u8,
+    stxb_node_indices: [8]usize,
+    first_idx: usize,
+    last_idx: usize,
+};
+
+pub const StoreReport = struct {
+    groups: []Stxb8Group,
+
+    pub fn deinit(self: *StoreReport, allocator: std.mem.Allocator) void {
+        allocator.free(self.groups);
+        self.groups = &.{};
+    }
+};
+
+/// Trace back from an stxb at `stxb_idx` to identify the original u64
+/// source register that feeds the byte being stored. Returns the
+/// source reg, or `null` if the trace doesn't match the expected
+/// bpfel pattern.
+///
+/// Cases handled:
+///   - Byte-N for N ≥ 2: `mov rScratch, rSource; rsh rScratch, N*8;
+///     stxb [base+N], rScratch` — source is rSource.
+///   - Byte-0 (direct): no prior mov/rsh on val_reg — val_reg IS the
+///     source u64.
+///   - Byte-1 in-place: `rsh rSource, 8; stxb [base+1], rSource` —
+///     source is val_reg (rSource itself, just shifted in place).
+///
+/// We walk back up to ~8 instructions looking for the most recent
+/// writer of val_reg; if that writer is rsh we keep walking to find
+/// the preceding mov (if any) that established val_reg.
+fn traceStoreSource(nodes: []const ASTNode, stxb_idx: usize) ?u8 {
+    const stxb_node = switch (nodes[stxb_idx]) {
+        .Instruction => |n| n,
+        else => return null,
+    };
+    const val_reg = (stxb_node.instruction.src orelse return null).n;
+
+    const MAX_STEPS: usize = 8;
+    var saw_rsh = false;
+    var k: usize = stxb_idx;
+    var steps: usize = 0;
+    while (steps < MAX_STEPS and k > 0) : (steps += 1) {
+        k -= 1;
+        const inst_node = switch (nodes[k]) {
+            .Instruction => |n| n,
+            else => continue,
+        };
+        const inst = inst_node.instruction;
+        const dst = (inst.dst orelse continue).n;
+        if (dst != val_reg) continue;
+
+        switch (inst.opcode) {
+            .Mov64Reg => {
+                // `mov val_reg, rSource` — the preceding value of
+                // val_reg came from rSource. That's our source.
+                const src = (inst.src orelse return null).n;
+                return src;
+            },
+            .Rsh64Imm => {
+                // `rsh val_reg, N` — val_reg was shifted in place.
+                // Keep walking: if a `mov val_reg, rSource` precedes
+                // this rsh, rSource is the source (bytes 2..7 pattern).
+                // If no mov is found before an independent writer,
+                // val_reg itself is the source (byte-1 pattern).
+                saw_rsh = true;
+                continue;
+            },
+            else => {
+                // Some other op wrote val_reg. If we've seen rsh, we
+                // cannot tell where val_reg came from; bail.
+                if (saw_rsh) return null;
+                // Otherwise val_reg was established by a non-rsh
+                // instruction that we don't recognize. That's either
+                // a store-pattern we don't handle, or val_reg IS the
+                // source delivered directly. Conservatively bail.
+                return null;
+            },
+        }
+    }
+
+    // Walked past the window with no mov found:
+    //   - If we saw rsh: byte-1 in-place pattern, val_reg is source.
+    //   - If we didn't: byte-0 direct pattern, val_reg is source.
+    return val_reg;
+}
+
+/// Scan the node list for unaligned-u64-store clusters.
+pub fn scanStores(
+    allocator: std.mem.Allocator,
+    nodes: []const ASTNode,
+) !StoreReport {
+    const StxbEntry = struct {
+        node_idx: usize,
+        base: u8,
+        offset: i16,
+    };
+    var entries: std.ArrayList(StxbEntry) = .empty;
+    defer entries.deinit(allocator);
+
+    for (nodes, 0..) |node, idx| {
+        const inst = switch (node) {
+            .Instruction => |n| n.instruction,
+            else => continue,
+        };
+        if (inst.opcode != .Stxb) continue;
+        const dst = inst.dst orelse continue;
+        const off_either = inst.off orelse continue;
+        const off = switch (off_either) {
+            .right => |v| v,
+            .left => continue,
+        };
+        try entries.append(allocator, .{
+            .node_idx = idx,
+            .base = dst.n,
+            .offset = off,
+        });
+    }
+
+    var groups: std.ArrayList(Stxb8Group) = .empty;
+    errdefer groups.deinit(allocator);
+
+    const sorted = try allocator.dupe(StxbEntry, entries.items);
+    defer allocator.free(sorted);
+    std.mem.sort(StxbEntry, sorted, {}, struct {
+        fn lt(_: void, a: StxbEntry, b: StxbEntry) bool {
+            if (a.base != b.base) return a.base < b.base;
+            if (a.offset != b.offset) return a.offset < b.offset;
+            return a.node_idx < b.node_idx;
+        }
+    }.lt);
+
+    var consumed = try allocator.alloc(bool, sorted.len);
+    defer allocator.free(consumed);
+    @memset(consumed, false);
+
+    var i: usize = 0;
+    while (i + 8 <= sorted.len) : (i += 1) {
+        if (consumed[i]) continue;
+        const base = sorted[i].base;
+        const start_off = sorted[i].offset;
+
+        var picked: [8]usize = undefined;
+        var want_off: i16 = start_off;
+        var picks: u8 = 0;
+        var cursor: usize = i;
+        while (cursor < sorted.len and picks < 8) : (cursor += 1) {
+            if (consumed[cursor]) continue;
+            const e = sorted[cursor];
+            if (e.base != base) break;
+            if (e.offset < want_off) continue;
+            if (e.offset > want_off) break;
+            picked[picks] = cursor;
+            picks += 1;
+            want_off += 1;
+        }
+        if (picks < 8) continue;
+
+        var first_idx: usize = std.math.maxInt(usize);
+        var last_idx: usize = 0;
+        var node_idxs: [8]usize = undefined;
+        for (picked, 0..) |p, k| {
+            const ni = sorted[p].node_idx;
+            node_idxs[k] = ni;
+            if (ni < first_idx) first_idx = ni;
+            if (ni > last_idx) last_idx = ni;
+        }
+
+        // Locality guard — same as loads. Cross-BB scatter stores
+        // to same base would produce false positives.
+        const SPAN_LIMIT: usize = 40;
+        if (last_idx - first_idx > SPAN_LIMIT) continue;
+
+        // Determine source reg by tracing each stxb.
+        var source_agreed: ?u8 = null;
+        var all_match = true;
+        for (picked) |p| {
+            const src = traceStoreSource(nodes, sorted[p].node_idx) orelse {
+                all_match = false;
+                break;
+            };
+            if (source_agreed) |agreed| {
+                if (agreed != src) {
+                    all_match = false;
+                    break;
+                }
+            } else {
+                source_agreed = src;
+            }
+        }
+        if (!all_match or source_agreed == null) continue;
+
+        for (picked) |p| consumed[p] = true;
+
+        try groups.append(allocator, .{
+            .base_reg = base,
+            .base_offset = start_off,
+            .source_reg = source_agreed.?,
+            .stxb_node_indices = node_idxs,
+            .first_idx = first_idx,
+            .last_idx = last_idx,
+        });
+    }
+
+    return .{ .groups = try groups.toOwnedSlice(allocator) };
+}
+
+/// Instructions that legitimately appear inside an unaligned-u64-store
+/// pattern body.
+fn isStoreBodyOpcode(op: Opcode) bool {
+    return switch (op) {
+        .Stxb, .Mov64Reg, .Rsh64Imm => true,
+        else => false,
+    };
+}
+
+/// Compute the inclusive end-index of a store cluster's span. Walks
+/// forward from `last_idx` while each node is a store-body opcode,
+/// with a small budget.
+fn computeStoreSpanEnd(nodes: []const ASTNode, g: Stxb8Group) usize {
+    const MAX_EXTRA: usize = 4;
+    var i: usize = g.last_idx + 1;
+    const stop_at = @min(nodes.len, g.last_idx + 1 + MAX_EXTRA);
+    while (i < stop_at) : (i += 1) {
+        switch (nodes[i]) {
+            .Instruction => |n| if (!isStoreBodyOpcode(n.instruction.opcode)) return i - 1,
+            else => return i - 1,
+        }
+    }
+    return stop_at - 1;
+}
+
+/// Check whether `g`'s source_reg is reassigned (as dst) by the
+/// instruction immediately following the span. If yes, the `rsh
+/// source_reg, 8` side-effect inside the pattern is dead and safe to
+/// eliminate.
+fn storePatternSourceIsDead(nodes: []const ASTNode, g: Stxb8Group, span_end: usize) bool {
+    if (span_end + 1 >= nodes.len) return false;
+    const next = switch (nodes[span_end + 1]) {
+        .Instruction => |n| n.instruction,
+        else => return false,
+    };
+    const d = next.dst orelse return false;
+    return d.n == g.source_reg;
+}
+
+/// Rewrite a single store cluster in place: delete everything in
+/// `[first_idx .. span_end]`, insert one `stxdw [base + offset], source`
+/// at `first_idx`, renumber subsequent offsets, and fix any numeric
+/// jumps that cross the deleted region.
+fn applyStoreRewrite(
+    ast: anytype,
+    g: Stxb8Group,
+    span_end: usize,
+) !usize {
+    const span_first = g.first_idx;
+
+    // Collect byte range to delete.
+    var del_start_byte: u64 = std.math.maxInt(u64);
+    var del_end_byte: u64 = 0;
+    var k: usize = span_first;
+    while (k <= span_end) : (k += 1) {
+        switch (ast.nodes.items[k]) {
+            .Instruction => |n| {
+                if (n.offset < del_start_byte) del_start_byte = n.offset;
+                const end = n.offset + n.instruction.getSize();
+                if (end > del_end_byte) del_end_byte = end;
+            },
+            else => {},
+        }
+    }
+
+    const total_removed: usize = span_end - span_first + 1;
+
+    const new_inst: instruction_mod.Instruction = .{
+        .opcode = .Stxdw,
+        .dst = .{ .n = g.base_reg },
+        .src = .{ .n = g.source_reg },
+        .off = .{ .right = g.base_offset },
+        .imm = null,
+        .span = .{ .start = 0, .end = 8 },
+    };
+    ast.nodes.items[span_first] = .{
+        .Instruction = .{ .instruction = new_inst, .offset = del_start_byte },
+    };
+
+    var src_i: usize = span_end + 1;
+    var dst_i: usize = span_first + 1;
+    while (src_i < ast.nodes.items.len) : (src_i += 1) {
+        ast.nodes.items[dst_i] = ast.nodes.items[src_i];
+        dst_i += 1;
+    }
+    ast.nodes.shrinkRetainingCapacity(dst_i);
+
+    const byte_delta: u64 = (del_end_byte - del_start_byte) - 8;
+    var idx: usize = 0;
+    while (idx < ast.nodes.items.len) : (idx += 1) {
+        switch (ast.nodes.items[idx]) {
+            .Instruction => |*payload| {
+                if (payload.offset >= del_end_byte) payload.offset -= byte_delta;
+            },
+            .Label => |*payload| {
+                if (payload.offset >= del_end_byte) payload.offset -= byte_delta;
+            },
+            else => {},
+        }
+    }
+    ast.text_size -= byte_delta;
+
+    const insn_delta: i64 = @intCast(total_removed - 1);
+    idx = 0;
+    while (idx < ast.nodes.items.len) : (idx += 1) {
+        const node = &ast.nodes.items[idx];
+        const payload: *@TypeOf(node.Instruction) = switch (node.*) {
+            .Instruction => |*p| p,
+            else => continue,
+        };
+        const inst = &payload.instruction;
+        const src_byte_post = payload.offset;
+        const is_jump = inst.isJump();
+        const is_local_call = inst.opcode == .Call and
+            (inst.src != null and inst.src.?.n == 1);
+        if (!is_jump and !is_local_call) continue;
+
+        const raw_off: i64 = if (is_jump)
+            (offNumeric(inst.*) orelse continue)
+        else
+            (callImmNumeric(inst.*) orelse continue);
+
+        const orig_src_byte: i64 = if (src_byte_post >= del_start_byte)
+            @as(i64, @intCast(src_byte_post)) + @as(i64, @intCast(byte_delta))
+        else
+            @as(i64, @intCast(src_byte_post));
+        const orig_target_byte: i64 = orig_src_byte + 8 + raw_off * 8;
+
+        const d_start: i64 = @intCast(del_start_byte);
+        const d_end: i64 = @intCast(del_end_byte);
+        const crosses_forward = orig_src_byte < d_start and orig_target_byte >= d_end;
+        const crosses_backward = orig_src_byte >= d_end and orig_target_byte <= d_start;
+        if (!crosses_forward and !crosses_backward) continue;
+
+        const new_off = if (crosses_forward) raw_off - insn_delta else raw_off + insn_delta;
+        if (is_jump) {
+            inst.off = .{ .right = @intCast(new_off) };
+        } else {
+            inst.imm = .{ .right = .{ .Int = new_off } };
+        }
+    }
+
+    return total_removed - 1;
+}
+
+/// Run the store-pattern rewriter. Processes groups in descending
+/// first_idx order so earlier rewrites don't invalidate later indices.
+pub fn rewriteStores(
+    allocator: std.mem.Allocator,
+    ast: anytype,
+) !struct { rewritten: usize, skipped: usize, insns_deleted: usize } {
+    var report = try scanStores(allocator, ast.nodes.items);
+    defer report.deinit(allocator);
+
+    std.mem.sort(Stxb8Group, report.groups, {}, struct {
+        fn gt(_: void, a: Stxb8Group, b: Stxb8Group) bool {
+            return a.first_idx > b.first_idx;
+        }
+    }.gt);
+
+    var rewritten: usize = 0;
+    var skipped: usize = 0;
+    var total_delta: usize = 0;
+
+    for (report.groups) |g| {
+        const span_end = computeStoreSpanEnd(ast.nodes.items, g);
+
+        // Safety: every node in [first_idx..span_end] is a store-body
+        // whitelist Instruction (no Labels, no foreign opcodes).
+        var safe = true;
+        var i: usize = g.first_idx;
+        while (i <= span_end) : (i += 1) {
+            switch (ast.nodes.items[i]) {
+                .Instruction => |n| if (!isStoreBodyOpcode(n.instruction.opcode)) {
+                    safe = false;
+                    break;
+                },
+                else => {
+                    safe = false;
+                    break;
+                },
+            }
+        }
+        if (!safe) {
+            skipped += 1;
+            continue;
+        }
+
+        // Compute byte range for jump-target guard.
+        var first_byte: u64 = std.math.maxInt(u64);
+        var last_byte: u64 = 0;
+        var bi: usize = g.first_idx;
+        while (bi <= span_end) : (bi += 1) {
+            const inst_node = switch (ast.nodes.items[bi]) {
+                .Instruction => |n| n,
+                else => continue,
+            };
+            if (inst_node.offset < first_byte) first_byte = inst_node.offset;
+            const end = inst_node.offset + inst_node.instruction.getSize();
+            if (end > last_byte) last_byte = end;
+        }
+        if (anyJumpTargetsInside(ast.nodes.items, first_byte, last_byte)) {
+            skipped += 1;
+            continue;
+        }
+
+        // Liveness safety: the pattern's last `rsh source_reg, 8`
+        // mutates source_reg. Only skip rewrite if the instruction
+        // immediately after the span doesn't reassign source_reg
+        // (otherwise post-pattern code might read the shifted value).
+        if (!storePatternSourceIsDead(ast.nodes.items, g, span_end)) {
+            skipped += 1;
+            continue;
+        }
+
+        const removed = applyStoreRewrite(ast, g, span_end) catch {
+            skipped += 1;
+            continue;
+        };
+        total_delta += removed;
+        rewritten += 1;
+    }
+
+    return .{
+        .rewritten = rewritten,
+        .skipped = skipped,
+        .insns_deleted = total_delta,
+    };
+}
+
+// ---------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------
 
