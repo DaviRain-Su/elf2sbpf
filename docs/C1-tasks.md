@@ -494,13 +494,19 @@ Solana SBPF 特有结构。
     re-exports
   - **验收**：4 新单测（空 Program、append section/header、hasRodata 检测）
 
-- [ ] **G.2**：`emit/program.zig` — `fromParseResult(pr: ParseResult, arch: V0)`
-  - 从 ParseResult 构建 sections 列表
-  - 计算 `e_entry`、`e_phoff`、`e_shoff`、`e_shnum`、`e_shstrndx`
-  - V0 特有：program_headers 数量（static=0 / dynamic=3）
-  - 遍历 sections，分配 offset
-  - **验收**：对 hello 的 ParseResult，Program 的字段（section 数
-    量、每个 section 的 offset）跟 shim 一致
+- [x] **G.2**：`emit/program.zig` — `fromParseResult(pr, arch)` ✅ 2026-04-18
+  - 三分支调度：V3 / V0 dynamic / V0 static（port Rust program.rs 一比一）
+  - offset 分配在构建过程中完成：base_offset → code → data(?) → pad8
+    → (V0 dynamic: dynamic/dynsym/dynstr/reldyn) → shstrtab
+  - V0 dynamic 的 dyn_syms / rel_dyns / symbol_names 由 Program 本身
+    的 `dyn_syms_storage` / `rel_dyns_storage` / `symbol_names_storage`
+    三个 ArrayList 持有，section variants 借用切片
+  - back-fill：dynamic.rel_offset/rel_size/dynsym_offset/dynstr_offset/
+    dynstr_size，dynsym/reldyn 的 sh_link
+  - program_headers：V3 1-2 个 PT_LOAD；V0 dynamic 3 个
+    (PT_LOAD text, PT_LOAD dyn-data, PT_DYNAMIC)；V0 static 0 个
+  - **验收**：3 新单测（V0 static minimal、V3 no-rodata、V0 dynamic
+    with syscall 全链路）
 
 - [ ] **G.3**：`emit/program.zig` — `emitBytecode() []u8`
   - 按顺序 emit：ELF header → program headers → section 内容 →
@@ -596,10 +602,10 @@ Solana SBPF 特有结构。
 | D — Byteparser | 9 | 9 | ✅ 完成 |
 | E — AST | 4 | 4 | ✅ 完成 |
 | F — ELF 输出层 | 12 | 12 | ✅ 完成 |
-| G — Program emit | 4 | 1 | 进行中 (25%) |
+| G — Program emit | 4 | 2 | 进行中 (50%) |
 | H — CLI | 3 | 2 | 进行中（入口/错误处理已完成；主流程验收待 Epic G） |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **44** | **79%** |
+| **总计** | **56** | **45** | **80%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
