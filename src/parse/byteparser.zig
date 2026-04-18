@@ -1350,6 +1350,80 @@ fn makeRelaLddwElf() [704]u8 {
     return out;
 }
 
+fn makeRelaSectionCallElf() [640]u8 {
+    var out: [640]u8 = @splat(0);
+
+    const shstrtab_off: usize = 560;
+    const shstrtab =
+        "\x00.text\x00.strtab\x00.symtab\x00.rela.text\x00.shstrtab\x00";
+    @memcpy(out[shstrtab_off .. shstrtab_off + shstrtab.len], shstrtab);
+
+    out[0] = 0x7f;
+    out[1] = 'E';
+    out[2] = 'L';
+    out[3] = 'F';
+    out[std.elf.EI.CLASS] = std.elf.ELFCLASS64;
+    out[std.elf.EI.DATA] = std.elf.ELFDATA2LSB;
+    out[std.elf.EI.VERSION] = 1;
+    out[16] = 3;
+    out[18] = 247;
+    out[20] = 1;
+    std.mem.writeInt(u64, out[40..48], 64, .little);
+    out[52] = 64;
+    out[58] = 64;
+    out[60] = 6;
+    out[62] = 5;
+
+    std.mem.writeInt(u32, out[128..132], 1, .little);
+    std.mem.writeInt(u32, out[132..136], std.elf.SHT_PROGBITS, .little);
+    std.mem.writeInt(u64, out[136..144], 0x6, .little);
+    std.mem.writeInt(u64, out[152..160], 448, .little);
+    std.mem.writeInt(u64, out[160..168], 8, .little);
+
+    std.mem.writeInt(u32, out[192..196], 7, .little);
+    std.mem.writeInt(u32, out[196..200], std.elf.SHT_STRTAB, .little);
+    std.mem.writeInt(u64, out[216..224], 456, .little);
+    std.mem.writeInt(u64, out[224..232], 5, .little);
+
+    std.mem.writeInt(u32, out[256..260], 15, .little);
+    std.mem.writeInt(u32, out[260..264], std.elf.SHT_SYMTAB, .little);
+    std.mem.writeInt(u64, out[280..288], 464, .little);
+    std.mem.writeInt(u64, out[288..296], 72, .little);
+    std.mem.writeInt(u32, out[296..300], 2, .little);
+    std.mem.writeInt(u64, out[312..320], @sizeOf(std.elf.Elf64_Sym), .little);
+
+    std.mem.writeInt(u32, out[320..324], 23, .little);
+    std.mem.writeInt(u32, out[324..328], std.elf.SHT_RELA, .little);
+    std.mem.writeInt(u64, out[344..352], 536, .little);
+    std.mem.writeInt(u64, out[352..360], @sizeOf(std.elf.Elf64_Rela), .little);
+    std.mem.writeInt(u32, out[360..364], 3, .little);
+    std.mem.writeInt(u32, out[364..368], 1, .little);
+    std.mem.writeInt(u64, out[376..384], @sizeOf(std.elf.Elf64_Rela), .little);
+
+    std.mem.writeInt(u32, out[384..388], 34, .little);
+    std.mem.writeInt(u32, out[388..392], std.elf.SHT_STRTAB, .little);
+    std.mem.writeInt(u64, out[408..416], shstrtab_off, .little);
+    std.mem.writeInt(u64, out[416..424], shstrtab.len, .little);
+
+    @memcpy(out[456..461], "\x00foo\x00");
+
+    // symtab[1] = STT_SECTION for .text
+    out[464 + 24 + 4] = 0x03;
+    std.mem.writeInt(u16, out[464 + 24 + 6 .. 464 + 24 + 8], 1, .little);
+
+    // symtab[2] = named symbol "foo" at offset 8 in .text
+    std.mem.writeInt(u32, out[464 + 48 .. 464 + 52], 1, .little);
+    out[464 + 48 + 4] = 0x02;
+    std.mem.writeInt(u16, out[464 + 48 + 6 .. 464 + 48 + 8], 1, .little);
+    std.mem.writeInt(u64, out[464 + 48 + 8 .. 464 + 48 + 16], 8, .little);
+
+    std.mem.writeInt(u64, out[536..544], 0, .little);
+    std.mem.writeInt(u64, out[544..552], (@as(u64, 1) << 32) | 10, .little);
+    std.mem.writeInt(i64, out[552..560], 8, .little);
+
+    return out;
+}
+
 test "isRoSectionName recognizes rodata variants" {
     try testing.expect(isRoSectionName(".rodata"));
     try testing.expect(isRoSectionName(".rodata.str1.1"));

@@ -403,10 +403,19 @@ Solana SBPF 特有结构。
   - 完整 SHT_* / SHF_* 常量集（NULL/PROGBITS/STRTAB/DYNAMIC/REL/NOBITS/DYNSYM + WRITE/ALLOC/EXECINSTR）
   - **验收**：1 单测（.text section header round-trip）
 
-- [ ] **F.4**：`emit/section_types.zig` — `NullSection` / `ShStrTabSection`
-  - NullSection：全零 64 字节 section header
-  - ShStrTabSection：section 名字的字符串表
-  - **验收**：emit 跟 Rust 版一致
+- [x] **F.4**：`emit/section_types.zig` — `NullSection` / `ShStrTabSection` ✅ 2026-04-18
+  - `NullSection` — 0 字节内容 + 全零 section header
+  - `ShStrTabSection { name_offset, section_names, offset }`
+    - `bytecode` 产 `\0name1\0name2\0...\0.s\0` 并 pad 到 8 字节边界
+    - `size` 返回**不含 padding** 的字符串表大小（跟 Rust 一致）
+    - 隐式 append `.s` 作为本 section 自己的名字
+    - `sectionHeaderBytecode` 写 SHT_STRTAB + addralign=1
+  - **验收**：4 单测——NullSection 零值；ShStrTab 单 name 布局；空 name 跳过；section header 字段检查
+
+- **（linter 协作修正）**：
+  - `Instruction.isSyscall` 定义被 linter 扩展——原来"只有 `.left` imm 算 syscall"，现在 "src=0 或 `.left` imm"，涵盖 V3 resolved syscall case
+  - `main.zig` 补了 3 个 parseArgv 单测 + linkErrorExitCode 映射
+  - 同步更新 integration test 的期望
 
 - [ ] **F.5**：`emit/section_types.zig` — `CodeSection`
   - 持有 Instruction 节点列表
@@ -565,11 +574,11 @@ Solana SBPF 特有结构。
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
 | D — Byteparser | 9 | 9 | ✅ 完成 |
 | E — AST | 4 | 4 | ✅ 完成 |
-| F — ELF 输出层 | 12 | 3 | 进行中 (25%) |
+| F — ELF 输出层 | 12 | 4 | 进行中 (33%) |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 3 | ✅ 完成（框架；产物验证等 Epic G） |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **35** | **63%** |
+| **总计** | **56** | **36** | **64%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

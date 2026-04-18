@@ -1770,6 +1770,55 @@ H 的 "CLI 能产出跟 shim 一致的 .so" 验收等 Epic G 完成后做。
 port Rust sbpf-assembler section.rs（1085 行）里的剩余 section
 类型（Code/Data/DynSym/DynStr/Dynamic/RelDyn/Debug）。
 
+---
+
+## C1-F.4 — NullSection + ShStrTabSection
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 做的事
+
+1. 新增 `src/emit/section_types.zig`（~200 行）
+2. **NullSection** — 零 size 内容 + 全零 64-byte header
+3. **ShStrTabSection**
+   - 三字段：`name_offset` / `section_names` / `offset`
+   - `bytecode` 产 `\0name1\0name2\0...\0.s\0` 然后 pad 到 8 字节
+   - `size` 跟 Rust 一致返回**不含 padding** 的字符串表大小
+   - 隐式 append `.s` —— 调用方不用自己加
+   - `sectionHeaderBytecode` 写 SHT_STRTAB + addralign=1
+
+### Zig idioms 学到的
+
+- 可变 slice 参数：`*[64]u8` 是固定大小指针，`[]u8` 是切片——
+  两者不兼容。Header/section writer 用 `*[N]u8` 省去 bounds check
+- 连 `std.ArrayList(u8)` 的 `toOwnedSlice(allocator)` 在 Zig 0.16
+  里也要传 allocator（每个可变操作都显式传）
+
+### 协作修正（linter 并发改动）
+
+本轮 file-save 之间，linter：
+1. 把 `isSyscall` 语义从"只有 `.left` imm 算 syscall" 改成"src=0
+   或 `.left` imm"——让 V3 resolved syscall (src=0, imm=hash) 也
+   被识别。我一度改错期望再改回。
+2. 扩展 `main.zig` 加了 CLI 全套实现 + 3 个 parseArgv 单测。
+
+教训：linter pass 比我想象的活跃。以后 commit 前对可能被 linter
+改过的文件**先 Read 再 Edit**，避免 "File has been modified since
+last read" 冲突。
+
+### 验收
+
+- 4 单测（NullSection、ShStrTab 基础、空 name 跳过、sh header）
+- 143/143 tests 全绿（累计：lib 140 + exe 3）
+
+### 下一任务
+
+**F.5** `CodeSection` — 从 ASTNode 列表 emit text section 字节 +
+section header。这次会第一次真正用到 Instruction.toBytes —— 把每
+条指令序列化成 8/16 字节。
+
+
 
 
 
