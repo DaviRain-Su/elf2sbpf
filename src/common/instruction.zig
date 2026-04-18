@@ -12,6 +12,7 @@ const Opcode = opcode_mod.Opcode;
 const OperationType = opcode_mod.OperationType;
 const Number = @import("number.zig").Number;
 const Register = @import("register.zig").Register;
+const murmur3_32 = @import("syscalls.zig").murmur3_32;
 
 /// Errors returned by Instruction byte encode/decode.
 pub const DecodeError = error{
@@ -788,4 +789,54 @@ test "round-trip: decode → encode produces identical bytes" {
         try inst.toBytes(buf[0..inst.getSize()]);
         try std.testing.expectEqualSlices(u8, tc.bytes, buf[0..tc.bytes.len]);
     }
+}
+
+// --- C1-B.10 integration tests ---
+
+test "integration: syscall hash -> call instruction encode/decode round-trip" {
+    const syscall_hash = murmur3_32("sol_log_");
+    const inst = Instruction{
+        .opcode = .Call,
+        .dst = null,
+        .src = .{ .n = 0 }, // syscall call
+        .off = null,
+        .imm = .{ .right = .{ .Int = @intCast(syscall_hash) } },
+        .span = .{ .start = 0, .end = 8 },
+    };
+
+    try std.testing.expect(inst.isSyscall());
+    try std.testing.expect(!inst.isJump());
+    try std.testing.expectEqual(@as(u64, 8), inst.getSize());
+
+    var bytes: [8]u8 = undefined;
+    try inst.toBytes(&bytes);
+
+    const decoded = try Instruction.fromBytes(&bytes);
+    try std.testing.expectEqual(Opcode.Call, decoded.opcode);
+    try std.testing.expect(decoded.src != null);
+    try std.testing.expectEqual(@as(u8, 0), decoded.src.?.n);
+    try std.testing.expect(decoded.imm != null);
+    try std.testing.expectEqual(
+        @as(i64, @intCast(syscall_hash)),
+        decoded.imm.?.right.Int,
+    );
+}
+
+test "integration: callx keeps src register and is not syscall" {
+    const inst = Instruction{
+        .opcode = .Call,
+        .dst = null,
+        .src = .{ .n = 1 }, // callx call
+        .off = null,
+        .imm = .{ .right = .{ .Int = 0 } },
+        .span = .{ .start = 0, .end = 8 },
+    };
+
+    try std.testing.expect(!inst.isSyscall());
+
+    var bytes: [8]u8 = undefined;
+    try inst.toBytes(&bytes);
+    const decoded = try Instruction.fromBytes(&bytes);
+    try std.testing.expectEqual(@as(u8, 1), decoded.src.?.n);
+    try std.testing.expect(!decoded.isSyscall());
 }
