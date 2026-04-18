@@ -1119,6 +1119,49 @@ try list.append(allocator, item);             // append，per-call 传 allocator
 没实质效果（字符串常量都是匿名）但对 counter/vault 这些多命名 rodata 的
 example 关键。
 
+---
+
+## C1-D.2 — 收集 pending_rodata + text labels
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 做的事
+
+1. 新增 3 个类型：
+   - `RodataEntry`：name/address/size/bytes + **name_owned** flag
+     （D.4 合成的 anon entry 会设 true；D.2 的命名符号设 false）
+   - `TextLabel`：name + 合并后 offset（section_base + symbol.address）
+   - `SymbolScan`：owner，带 deinit 释放 owned names
+2. `scanSymbols(allocator, file, sections)` 主入口
+3. 两个错误：`EmptyNamedRodataSymbol` / `SymbolOutOfSectionRange`
+4. 2 个单测：hello.o（1 entrypoint + 空 pending_rodata）+ 无 symtab（全空）
+
+### 关键设计点：name_owned
+
+Rust byteparser 对 name 一律 `.to_owned()`（String allocation）。Zig 我们
+希望尽量 borrow ELF strtab 切片，但 D.4 的 anon entries 名字是动态
+合成的（`std.fmt.allocPrint`），必须 owned。
+
+**解决**：`RodataEntry.name_owned: bool` 字段，`SymbolScan.deinit` 根据
+flag 决定是否 `allocator.free(e.name)`。这是 Rust 版没有的细节，
+但 Zig 无 GC 必须显式管理。
+
+### 验收
+
+- [x] 2 测试全绿（+0 incidental）
+- [x] `zig build test --summary all`：**93/93** 全绿
+- [x] hello.o 的 symbol scan 行为跟 shim 一致（无 named rodata，
+      entrypoint 在 offset 0）
+
+### 下一任务
+
+**D.3** 扫 text relocations 收集 `lddw_targets` —— **这是改进版 gap-fill
+算法的核心**，spec §6.2 的 Pass 1。对每条 text relocation，如果目标是
+ro_section 且被 relocation 的指令是 lddw（opcode 0x18），从指令的 imm
+字段提取 addend，插入 `lddw_targets[target_section_idx]`。
+
+
 
 
 

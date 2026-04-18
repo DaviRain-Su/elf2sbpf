@@ -255,14 +255,15 @@ test` 跑空测试。
   - **Zig 0.16 ArrayList**：`.empty` + 每次 `.append(allocator, ...)` 传 allocator
   - **验收**：4 个单测全绿（2 个 name predicate + hello.o 分类 + index lookup）
 
-- [ ] **D.2**：扫符号，收集 `pending_rodata`
-  - 对每个符号，若它属于 rodata section 且不是 `STT_SECTION` 且
-    `size > 0`，收集成 `RodataEntry`
-  - 同时：text 符号 push 成 `ASTNode::Label`
-  - 同时：名字为 `entrypoint` 的符号 push 成
-    `ASTNode::GlobalDecl`
-  - **验收**：对 hello.o，pending_rodata 初始为空（Zig 产的 rodata
-    没具名符号），text label 包含 `entrypoint`
+- [x] **D.2**：扫符号，收集 `pending_rodata` + text labels + entry_label ✅ 2026-04-18
+  - `scanSymbols(allocator, file, sections) → SymbolScan`
+  - `RodataEntry { section_index, address, size, name, name_owned, bytes }`
+    （D.4 的合成 entry 会设 name_owned=true，确保释放）
+  - `TextLabel { name, offset }`——offset 已经加上 text_base
+  - `entry_label: ?[]const u8`——"entrypoint" 符号存在就设置
+  - 无 symtab 正常返回空 scan（stripped ELF 合法）
+  - **新错误**：`EmptyNamedRodataSymbol`、`SymbolOutOfSectionRange`
+  - **验收**：2 个单测——hello.o 返回 1 个 entrypoint label + 空 pending_rodata；无 symtab ELF 返回全空
 
 - [ ] **D.3**：扫 text relocation，收集 `lddw_targets`（改进算法）
   - 对每个 text section 的 relocation，检查对应 offset 是不是
@@ -551,13 +552,13 @@ Solana SBPF 特有结构。
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
-| D — Byteparser | 9 | 1 | 进行中 (11%) |
+| D — Byteparser | 9 | 2 | 进行中 (22%) |
 | E — AST | 4 | 0 | 未开始 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **17** | **30%** |
+| **总计** | **56** | **18** | **32%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
