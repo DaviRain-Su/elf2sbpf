@@ -244,5 +244,38 @@ byte-identical · fuzz-lite 160/160 · 零 panic/assert/ptrCast · 全部 public
 API 有 error-path 测 · 恶意 ELF 输入 overflow-safe · bilingual docs · 5 个
 ADR · 7 phase 审查全部记录在本文档 · 自动 release workflow。
 
+---
+
+## Phase 8 — 补扫（用户追问，2026-04-18 第 8 轮）
+
+用户指出 README 之外的其它 docs 也可能有漂移。再扫一轮 README/PRD/架构/
+tech-spec 之外剩下的文档（install / library / CHANGELOG.zh / 05-test-spec /
+scripts/README / C0-findings / decisions.zh / integrations draft）。
+
+### Phase 8 findings
+
+| # | severity | 位置 | 描述 | 行动 |
+|---|----------|------|------|------|
+| 8.1 | low | `docs/05-test-spec.md` §1.1 | "改进版 gap-fill 算法在 shim 里已经实现并跑通 6/9 example" —— 实际 9/9 + V3 也 9/9 | ✅ 改成"v0.5.0 实际达成：9/9 在 V0 和 V3 + mini-debug 固定件" |
+| 8.2 | low | `docs/05-test-spec.md` §4 loop 示例后一句 | "C1 MVP 验收就是这个 loop 全绿" —— 没提 v0.5.0 起有两个并列 loop（V0/V3） | ✅ 追加一句说明总 378 tests |
+| 8.3 | **high** | `docs/install.md` + `docs/install.zh.md` "作为 Zig 项目依赖" | 说 "elf2sbpf 目前以 CLI 形式发布；Epic D.4 尚未完成，暂时需要手工 vendor" —— **v0.3.0 已落地** | ✅ 重写成"`zig fetch --save` + `build.zig` + `@import('elf2sbpf')` + 调 `linkProgram*` 三入口"；Zh/En 同步 |
+| 8.4 | **high** | `CHANGELOG.zh.md` | **落后 4 个版本**：只有 [0.1.0]，完全缺 [0.2.0]/[0.3.0]/[0.4.0]/[0.5.0] | ✅ 全部补齐（+136 行），每个 release 条目都跟英文 mirror 对应 |
+| 8.5 | info | `scripts/README.md` | 没提 `scripts/fuzz/gen.py` + `scripts/fuzz/run.sh`（v0.1.0 就有了） | ✅ 加 fuzz-lite 入口 + 常用命令示例 |
+| 8.6 | good | `docs/integrations/zignocchio-build.zig` header | 没有过期版本声明；最新修订已包含 `zig-import` 路径 | 无需行动 |
+| 8.7 | good | `docs/C0-findings.md` | 顶部 "状态：✅ GO —— 进入 C1" 是**历史记录**（写于 C0→C1 过渡时），不是当前 status claim，不改 | 保留 |
+| 8.8 | good | `docs/decisions.zh.md` vs `decisions.md` | ADR-001 / ADR-002 zh/en 内容对等 | 保留 |
+| 8.9 | good | 历史日志里 370/370 / 362/362 引用 | 都是**当时状态**的 frozen snapshot（在 review-report phase 描述 / CHANGELOG release 条目 / 06-impl-log / C1-tasks / D-tasks 的历史节点里），不是当前 claim | 保留 |
+
+### Phase 8 小结
+
+**两个重量级漏网**：
+- 8.3 install.md 的"D.4 还没做"说法 —— 跨越三个 release 没刷
+- 8.4 CHANGELOG.zh.md 落后四个版本 —— 中文用户看完全不知道 v0.2-v0.5 存在
+
+加上三个轻量修复（test-spec / scripts/README / 一些 wording），和四条
+good（C0-findings / decisions / integration draft / 历史日志）确认无需改。
+
+本轮后所有 **user-facing + internal planning 文档**都跟 v0.5.0 完全一致。
+
 
 

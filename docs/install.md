@@ -112,17 +112,31 @@ standalone `libLLVM.so` lookup problem.
 
 ## Using it as a Zig project dependency
 
-elf2sbpf is currently published as a CLI. If you want to import it as a Zig
-library (Epic D.4), you currently need to vendor it manually:
+Since v0.3.0, elf2sbpf is a first-class Zig library. Add it as a dependency
+with `zig fetch --save`:
 
 ```bash
-mkdir -p vendor/elf2sbpf
-cp -r /path/to/elf2sbpf/src vendor/elf2sbpf/
-# then add a module in build.zig
+zig fetch --save git+https://github.com/DaviRain-Su/elf2sbpf#v0.5.0
 ```
 
-Whether the API is stable enough to be used as a public Zig library dependency
-will be evaluated after C2 is complete.
+Then wire it into your `build.zig`:
+
+```zig
+const elf2sbpf_dep = b.dependency("elf2sbpf", .{
+    .target = target,
+    .optimize = optimize,
+});
+const elf2sbpf_mod = elf2sbpf_dep.module("elf2sbpf");
+
+// pass elf2sbpf_mod to your executable's imports
+```
+
+And call `linkProgram` / `linkProgramV3` / `linkProgramWithSyscalls`
+directly from your code (see [`library.md`](library.md) for the full
+public API, stability tiers, and example program).
+
+The library API is considered stable across v0.x; `linkProgram` and
+`LinkError` won't change their signatures within the 0.x series.
 
 ## Upgrade / uninstall
 

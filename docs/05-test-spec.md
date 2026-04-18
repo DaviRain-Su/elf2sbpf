@@ -15,7 +15,8 @@ elf2sbpf 的**首要 oracle 是 reference-shim 的产物**。任何模块的
 
 - shim 是已经验证过的 Rust 实现（跟 Rust sbpf-linker 管道字节
   一致，见 C0-findings.md）
-- 改进版 gap-fill 算法在 shim 里已经实现并跑通 6/9 example
+- 实际达成（v0.5.0）：9/9 zignocchio example 在 V0 和 V3 两种 arch
+  下都 byte-identical to shim；V0 还额外有一个 mini-debug 固定件
 - 字节级对拍比写"功能测试断言"更严格、更客观
 
 ### 1.2 TDD 严守
@@ -324,7 +325,9 @@ test "integration: 9 examples match reference-shim" {
 }
 ```
 
-**C1 MVP 验收就是这个 loop 全绿**。
+**C1 MVP 验收就是这个 loop 全绿**。自 v0.5.0 起有两个并列 loop：
+V0 sweep（10 goldens 含 mini-debug）+ V3 sweep（9 goldens），均
+在 `zig build test` 里自动跑。总计 378 个测试。
 
 ---
 

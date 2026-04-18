@@ -101,16 +101,31 @@ elf2sbpf program.o program.so
 
 ## 作为 Zig 项目依赖
 
-elf2sbpf 目前以 CLI 形式发布。如果你想把它作为 Zig 库 import
-（Epic D.4），暂时需要手工 vendor：
+自 v0.3.0 起，elf2sbpf 作为 Zig 库 first-class 支持。用
+`zig fetch --save` 拉进来：
 
 ```bash
-mkdir -p vendor/elf2sbpf
-cp -r /path/to/elf2sbpf/src vendor/elf2sbpf/
-# 在 build.zig 里加 module
+zig fetch --save git+https://github.com/DaviRain-Su/elf2sbpf#v0.5.0
 ```
 
-API 是否稳定到可以作为公开 Zig 库依赖，C2 阶段结束后再评估。
+然后在 `build.zig` 里接通：
+
+```zig
+const elf2sbpf_dep = b.dependency("elf2sbpf", .{
+    .target = target,
+    .optimize = optimize,
+});
+const elf2sbpf_mod = elf2sbpf_dep.module("elf2sbpf");
+
+// 把 elf2sbpf_mod 加到你 executable 的 imports 里
+```
+
+然后在代码里直接调 `linkProgram` / `linkProgramV3` /
+`linkProgramWithSyscalls`（完整 API 表、稳定性分级、consumer 示例
+程序见 [`library.md`](library.md)）。
+
+库 API 在 v0.x 范围内视作稳定；`linkProgram` / `LinkError` 签名在
+0.x 系列内不会破坏。
 
 ## 升级 / 卸载
 
