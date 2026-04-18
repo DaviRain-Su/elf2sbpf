@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const linker = @import("lib.zig");
 
 const UsageError = error{ InvalidArgs };
@@ -52,6 +53,41 @@ fn linkErrorExitCode(err: linker.LinkError) u8 {
     };
 }
 
+const CliExit = union(enum) {
+    ok,
+    usage,
+    read_error,
+    link_error: linker.LinkError,
+    write_error,
+};
+
+fn runCli(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+) CliExit {
+    const io = if (builtin.is_test) std.testing.io else std.options.debug_io;
+    const cwd = std.Io.Dir.cwd();
+    const parsed = parseArgv(args) catch return .usage;
+
+    switch (parsed) {
+        .help => return .usage,
+        .run => |run| {
+            const elf_bytes = cwd.readFileAlloc(io, run.input_path, allocator, .unlimited) catch return .read_error;
+            defer allocator.free(elf_bytes);
+
+            const out = linker.linkProgram(allocator, elf_bytes) catch |err| return .{ .link_error = err };
+            defer allocator.free(out);
+
+            cwd.writeFile(io, .{
+                .sub_path = run.output_path,
+                .data = out,
+            }) catch return .write_error;
+
+            return .ok;
+        },
+    }
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -64,42 +100,23 @@ pub fn main() !void {
     defer allocator.free(args);
     for (args_z, 0..) |arg, idx| args[idx] = std.mem.span(arg);
 
-    const parsed = parseArgv(args) catch {
-        try printUsage(std.io.getStdErr().writer());
-        std.process.exit(1);
-    };
-
-    switch (parsed) {
-        .help => {
-            try printUsage(std.io.getStdOut().writer());
+    switch (runCli(allocator, args)) {
+        .ok => return,
+        .usage => {
+            try printUsage(std.io.getStdErr().writer());
             std.process.exit(1);
         },
-        .run => |run| {
-            const elf_bytes = std.fs.cwd().readFileAlloc(allocator, run.input_path, std.math.maxInt(usize)) catch |err| {
-                try std.io.getStdErr().writer().print("failed to read input '{s}': {s}\n", .{
-                    run.input_path,
-                    @errorName(err),
-                });
-                std.process.exit(2);
-            };
-            defer allocator.free(elf_bytes);
-
-            const out = linker.linkProgram(allocator, elf_bytes) catch |err| {
-                try std.io.getStdErr().writer().print("link failed: {s}\n", .{@errorName(err)});
-                std.process.exit(linkErrorExitCode(err));
-            };
-            defer allocator.free(out);
-
-            std.fs.cwd().writeFile(.{
-                .sub_path = run.output_path,
-                .data = out,
-            }) catch |err| {
-                try std.io.getStdErr().writer().print("failed to write output '{s}': {s}\n", .{
-                    run.output_path,
-                    @errorName(err),
-                });
-                std.process.exit(5);
-            };
+        .read_error => {
+            try std.io.getStdErr().writer().writeAll("failed to read input file\n");
+            std.process.exit(2);
+        },
+        .link_error => |err| {
+            try std.io.getStdErr().writer().print("link failed: {s}\n", .{@errorName(err)});
+            std.process.exit(linkErrorExitCode(err));
+        },
+        .write_error => {
+            try std.io.getStdErr().writer().writeAll("failed to write output file\n");
+            std.process.exit(5);
         },
     }
 }
@@ -137,4 +154,28 @@ test "parseArgv rejects invalid arity" {
         "elf2sbpf",
     };
     try std.testing.expectError(UsageError.InvalidArgs, parseArgv(&args));
+}
+
+test "runCli returns usage for --help" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const args = [_][]const u8{ "elf2sbpf", "--help" };
+    try std.testing.expectEqual(CliExit.usage, runCli(alloc, &args));
+}
+
+test "runCli returns usage for invalid args" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const args = [_][]const u8{ "elf2sbpf" };
+    try std.testing.expectEqual(CliExit.usage, runCli(alloc, &args));
+}
+
+test "runCli returns read_error for missing input" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const args = [_][]const u8{ "elf2sbpf", "missing-input.o", "/tmp/out.so" };
+    try std.testing.expectEqual(CliExit.read_error, runCli(alloc, &args));
 }
