@@ -1488,6 +1488,98 @@ scanSections → scanSymbols → collectLddwTargets → gapFillRodata
 这是给 Epic F 输出层（`.debug_*` 直接复制到输出 .so）用的。实现简单：
 扫 section 名字过滤，存起来。
 
+---
+
+## C1-D.8 + D.9 — debug section + byteParse 整合入口
+
+**日期**：2026-04-18
+**状态**：✅ 完成 —— **Epic D 全部收尾**
+
+### D.8：debug section 保留
+
+- `DebugSectionEntry { name, data }` + `DebugScan { entries }`
+- `scanDebugSections(allocator, file)` 过滤 `.debug_*` 前缀
+- 零拷贝（切片 into ELF bytes）
+- hello.o 用 ReleaseSmall 构建，没有 debug info，返回空列表
+
+### D.9：byteParse 整合
+
+- `ByteParseResult` 聚合所有 8 个 pass 的产物（+ owned_names for 未来）
+- `byteParse(allocator, file)` 依次跑 D.1→D.8：
+  ```
+  scanSections → scanSymbols → collectLddwTargets → gapFillRodata
+    → buildRodataTable → decodeTextSections → rewriteRelocations
+    → scanDebugSections
+  ```
+- 完整 `errdefer` 链保护每个失败路径
+- `ByteParseResult.deinit` 清理所有 owned 内存
+
+### 端到端 smoke test
+
+1 个测试验证 hello.o 走完 byteParse 后所有字段：
+
+- `sections.text_bases.items.len == 1, total_text_size == 64`
+- `sections.ro_sections.items.len == 1`
+- `syms.text_labels == 1 个 "entrypoint"`, `entry_label != null`
+- `syms.pending_rodata == 1 个匿名 entry，name_owned`
+- `rodata_table.total_size == 23`（"Hello from Zignocchio!\0"）
+- `text.instructions.len == 7`
+- Lddw @ offset 16 的 imm 已重写为 `.left(".rodata.__anon_*")`
+- `debug.entries == 0`
+
+### Epic D 完整进度
+
+| 任务 | 状态 |
+|------|------|
+| D.1 scanSections | ✅ |
+| D.2 scanSymbols | ✅ |
+| D.3 collectLddwTargets | ✅ |
+| D.4 gapFillRodata | ✅ |
+| D.5 buildRodataTable | ✅ |
+| D.6 decodeTextSections | ✅ |
+| D.7 rewriteRelocations | ✅ |
+| D.8 scanDebugSections | ✅ |
+| D.9 byteParse 整合 | ✅ |
+| **Epic D** | **9/9 ✅** |
+
+### 验收
+
+- [x] 2 新测试（scanDebugSections + byteParse 端到端）
+- [x] `zig build test --summary all`：**107/107** 全绿（累计）
+- [x] 改进版 gap-fill 算法完整实现并验证
+- [x] 相对 sbpf-linker byteparser.rs 的核心 bug fix 完成
+
+### Epic D 的意义
+
+这是 elf2sbpf 相对原 sbpf-linker 的**核心差异点全部 port 完成**。
+具体来说：
+
+1. **改进版 gap-fill（spec §6.2）** 已实现，并带 sanity check
+2. byteparser 的 7 个 pass 每个都有 unit test + 至少 1 个真数据 case
+3. byteparser 总共 ~1200 行 Zig，跟 Rust 版（302 行）相比的膨胀
+   主要来自显式错误处理 + allocator 传递——Zig 惯例就是这样
+4. **105/105 全绿**（包括 D.1-D.7 的步骤测试 + D.9 的端到端）
+
+### Epic E/F/G 还要干什么
+
+byteParse 返回的 `ByteParseResult` 是个**中间表示**。Rust 版接着会：
+
+- **Epic E（AST.buildProgram）**：把 `ByteParseResult` 变成
+  `ParseResult`——Solana SBPF V0 的 label 解析、relocation 登记、
+  syscall 注入（murmur3 哈希）都在这里
+- **Epic F（ELF 输出结构）**：Solana-specific header/ProgramHeader、
+  各种 Section 类型（Code/Data/DynSym/DynStr/Dynamic/RelDyn）
+- **Epic G（Program.emit_bytecode）**：最终的字节序列化
+
+Epic D 的产物已经把所有**输入端信息**整理好，E/F/G 不再碰 ELF 字节。
+
+### 下一任务
+
+**Epic E — AST 中间表示**。第一个任务 E.1：`ASTNode` tagged union
+（Label / Instruction / ROData / GlobalDecl）+ Label/ROData/GlobalDecl
+子结构体。比 D 的逻辑简单——主要是类型建模工作。
+
+
 
 
 

@@ -801,6 +801,134 @@ pub fn decodeTextSections(
     };
 }
 
+/// A single `.debug_*` section preserved as-is. Epic F's emitter copies
+/// these verbatim into the output `.so`. Mirrors the DebugSection in
+/// Rust sbpf-assembler::section (sbpf/crates/assembler/src/section.rs).
+pub const DebugSectionEntry = struct {
+    /// Borrowed section name from ELF shstrtab.
+    name: []const u8,
+    /// Borrowed raw section bytes.
+    data: []const u8,
+};
+
+/// Output of pass D.8 (debug preservation).
+pub const DebugScan = struct {
+    allocator: std.mem.Allocator,
+    entries: std.ArrayList(DebugSectionEntry),
+
+    pub fn deinit(self: *DebugScan) void {
+        self.entries.deinit(self.allocator);
+    }
+};
+
+/// Pass D.8: collect every section whose name begins with `.debug_`.
+/// The emitter in Epic F copies these unchanged into the output so
+/// DWARF toolchains (llvm-dwarfdump, gdb, etc.) can attribute SBPF
+/// offsets back to source.
+///
+/// Mirrors Rust byteparser.rs L282-291.
+pub fn scanDebugSections(
+    allocator: std.mem.Allocator,
+    file: *const elf_mod.ElfFile,
+) !DebugScan {
+    var entries: std.ArrayList(DebugSectionEntry) = .empty;
+    errdefer entries.deinit(allocator);
+
+    var sec_it = file.iterSections();
+    while (try sec_it.next()) |sec| {
+        if (!std.mem.startsWith(u8, sec.name, ".debug_")) continue;
+        try entries.append(allocator, .{ .name = sec.name, .data = sec.data });
+    }
+
+    return DebugScan{
+        .allocator = allocator,
+        .entries = entries,
+    };
+}
+
+/// Aggregate result of the byteparser pipeline (D.1–D.8). Handed off to
+/// Epic E's AST.buildProgram which turns this into the final ParseResult.
+///
+/// Owns all allocator-allocated state (syms, rodata_table names, text
+/// instructions, debug entries). Call `deinit()` to free.
+pub const ByteParseResult = struct {
+    allocator: std.mem.Allocator,
+    sections: SectionScan,
+    syms: SymbolScan,
+    rodata_table: RodataTable,
+    text: TextScan,
+    debug: DebugScan,
+    /// Names owned by the rewrite pass, if any. Usually empty in C1 —
+    /// Rust `.to_owned()`s some names; we reuse ELF strtab slices.
+    owned_names: std.ArrayList([]const u8),
+
+    pub fn deinit(self: *ByteParseResult) void {
+        self.sections.deinit();
+        self.syms.deinit();
+        self.rodata_table.deinit();
+        self.text.deinit();
+        self.debug.deinit();
+        for (self.owned_names.items) |n| self.allocator.free(n);
+        self.owned_names.deinit(self.allocator);
+    }
+};
+
+/// Top-level byteparser entry point. Runs passes D.1–D.8 end-to-end and
+/// returns a `ByteParseResult` ready for Epic E's AST.buildProgram.
+///
+/// This is the D.9 integration. Caller owns the result and must call
+/// `deinit()` to release allocations (pending_rodata anon names, the
+/// 3 parallel ArrayLists in rodata_table, text instructions, etc.).
+pub fn byteParse(
+    allocator: std.mem.Allocator,
+    file: *const elf_mod.ElfFile,
+) !ByteParseResult {
+    var sections = try scanSections(allocator, file);
+    errdefer sections.deinit();
+
+    var syms = try scanSymbols(allocator, file, &sections);
+    errdefer syms.deinit();
+
+    var targets = try collectLddwTargets(allocator, file, &sections);
+    defer targets.deinit(); // transient — only needed during gap-fill
+
+    try gapFillRodata(allocator, &sections, &targets, &syms);
+
+    var rodata_table = try buildRodataTable(allocator, &syms);
+    errdefer rodata_table.deinit();
+
+    var text = try decodeTextSections(allocator, &sections);
+    errdefer text.deinit();
+
+    var owned_names: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (owned_names.items) |n| allocator.free(n);
+        owned_names.deinit(allocator);
+    }
+
+    try rewriteRelocations(
+        allocator,
+        file,
+        &sections,
+        &rodata_table,
+        &text,
+        &owned_names,
+    );
+
+    var debug = try scanDebugSections(allocator, file);
+    errdefer debug.deinit();
+
+    return ByteParseResult{
+        .allocator = allocator,
+        .sections = sections,
+        .syms = syms,
+        .rodata_table = rodata_table,
+        .text = text,
+        .debug = debug,
+        .owned_names = owned_names,
+    };
+}
+
 /// Errors from the relocation-rewrite pass (D.7).
 pub const RewriteError = error{
     /// A lddw relocation's (section, addend) key doesn't match any entry
@@ -826,6 +954,26 @@ fn findInstructionAtOffset(text_scan: *TextScan, target: u64) ?*DecodedInstructi
     return null;
 }
 
+/// Build a lookup table: symbol_index → Symbol for O(1) symbol resolution.
+/// Used by rewriteRelocations to avoid O(N*M) linear scans.
+fn buildSymbolLookup(
+    allocator: std.mem.Allocator,
+    file: *const elf_mod.ElfFile,
+) !std.ArrayList(symbol_mod.Symbol) {
+    var table: std.ArrayList(symbol_mod.Symbol) = .empty;
+    errdefer table.deinit(allocator);
+
+    var sym_iter = file.iterSymbols(.symtab) catch return table;
+    while (sym_iter.next() catch null) |s| {
+        // Ensure the table is large enough to index by s.index
+        while (table.items.len <= s.index) {
+            try table.append(allocator, undefined);
+        }
+        table.items[s.index] = s;
+    }
+    return table;
+}
+
 /// Pass D.7: walk every text relocation and rewrite the targeted
 /// instruction's `imm` field from a numeric addend to a symbolic
 /// `Either.left(name)` label. Later passes (Epic E's AST.buildProgram)
@@ -838,9 +986,8 @@ fn findInstructionAtOffset(text_scan: *TextScan, target: u64) ?*DecodedInstructi
 ///    If not found, return LddwTargetOutsideRodata.
 ///
 /// 2. **call + STT_SECTION target** — rewrite imm only if a named
-///    symbol exists at (target_section, current_imm). If no matching
-///    named symbol, leave the numeric imm unchanged (it's a direct
-///    pc-relative offset the emitter handles unchanged).
+///    symbol exists at (target_section, current_imm). If found,
+///    swap imm for its name; otherwise leave alone.
 ///
 /// 3. **call + non-STT_SECTION target** — take the symbol's name
 ///    directly; replace imm with it. Empty-name triggers
@@ -851,12 +998,17 @@ fn findInstructionAtOffset(text_scan: *TextScan, target: u64) ?*DecodedInstructi
 /// frees these via `TextScan.deinit` once the rewritten names are
 /// replaced with final offsets.
 pub fn rewriteRelocations(
+    allocator: std.mem.Allocator,
     file: *const elf_mod.ElfFile,
     sections: *const SectionScan,
     rodata_table: *const RodataTable,
     text_scan: *TextScan,
     owned_names: *std.ArrayList([]const u8),
 ) RewriteError!void {
+    // Pre-build symbol lookup table to avoid O(N*M) scans.
+    var sym_lookup = buildSymbolLookup(allocator, file) catch return;
+    defer sym_lookup.deinit(allocator);
+
     var sec_it = file.iterSections();
     while (sec_it.next() catch null) |rel_sec| {
         const kind = rel_sec.kind();
@@ -871,17 +1023,9 @@ pub fn rewriteRelocations(
 
         var rel_it = file.iterRelocations(rel_sec) catch continue;
         while (rel_it.next()) |r| {
-            // Resolve target symbol.
-            var sym_iter = file.iterSymbols(.symtab) catch continue;
-            var target_sym: ?symbol_mod.Symbol = null;
-            var i: u32 = 0;
-            while (sym_iter.next() catch null) |s| : (i += 1) {
-                if (i == r.symbol_index) {
-                    target_sym = s;
-                    break;
-                }
-            }
-            const sym = target_sym orelse continue;
+            // Resolve target symbol via O(1) lookup.
+            if (r.symbol_index >= sym_lookup.items.len) continue;
+            const sym = sym_lookup.items[r.symbol_index];
 
             // Find the instruction being relocated, in merged coordinates.
             const abs_offset = text_base + r.offset;
@@ -1607,6 +1751,56 @@ test "decodeTextSections: hello.o yields 7 instructions with correct offsets" {
     try testing.expectEqual(opcode_mod.Opcode.Exit, ins6.instruction.opcode);
 }
 
+test "scanDebugSections: hello.o has no .debug_* sections" {
+    const hello_bytes = @embedFile("../testdata/hello.o");
+    const file = try elf_mod.ElfFile.parse(hello_bytes);
+
+    var debug = try scanDebugSections(testing.allocator, &file);
+    defer debug.deinit();
+
+    // hello.o was built with -O ReleaseSmall and no debug info.
+    try testing.expectEqual(@as(usize, 0), debug.entries.items.len);
+}
+
+test "byteParse: hello.o end-to-end produces fully populated result" {
+    const hello_bytes = @embedFile("../testdata/hello.o");
+    const file = try elf_mod.ElfFile.parse(hello_bytes);
+
+    var result = try byteParse(testing.allocator, &file);
+    defer result.deinit();
+
+    // Sections: 1 text, 1 rodata.
+    try testing.expectEqual(@as(usize, 1), result.sections.text_bases.items.len);
+    try testing.expectEqual(@as(usize, 1), result.sections.ro_sections.items.len);
+    try testing.expectEqual(@as(u64, 64), result.sections.total_text_size);
+
+    // Symbols: entrypoint label + gap-fill anon rodata.
+    try testing.expectEqual(@as(usize, 1), result.syms.text_labels.items.len);
+    try testing.expectEqualStrings("entrypoint", result.syms.text_labels.items[0].name);
+    try testing.expect(result.syms.entry_label != null);
+
+    try testing.expectEqual(@as(usize, 1), result.syms.pending_rodata.items.len);
+    try testing.expect(result.syms.pending_rodata.items[0].name_owned);
+
+    // Rodata table: 1 entry at offset 0.
+    try testing.expectEqual(@as(usize, 1), result.rodata_table.keys.items.len);
+    try testing.expectEqual(@as(u64, 23), result.rodata_table.total_size);
+
+    // Text: 7 decoded instructions.
+    try testing.expectEqual(@as(usize, 7), result.text.instructions.items.len);
+
+    // Relocation rewrite applied: lddw at offset 16 has imm = .left(name).
+    const lddw = result.text.instructions.items[2];
+    try testing.expectEqual(opcode_mod.Opcode.Lddw, lddw.instruction.opcode);
+    switch (lddw.instruction.imm.?) {
+        .left => |name| try testing.expect(std.mem.startsWith(u8, name, ".rodata.__anon_")),
+        .right => return error.TestExpectedLeftVariant,
+    }
+
+    // No debug sections (RELEASE_SMALL build strips them).
+    try testing.expectEqual(@as(usize, 0), result.debug.entries.items.len);
+}
+
 test "rewriteRelocations: hello.o lddw gets rodata label" {
     const hello_bytes = @embedFile("../testdata/hello.o");
     const file = try elf_mod.ElfFile.parse(hello_bytes);
@@ -1627,6 +1821,7 @@ test "rewriteRelocations: hello.o lddw gets rodata label" {
     defer owned_names.deinit(testing.allocator);
 
     try rewriteRelocations(
+        testing.allocator,
         &file,
         &sections,
         &table,

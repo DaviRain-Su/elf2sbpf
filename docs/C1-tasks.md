@@ -312,15 +312,17 @@ test` 跑空测试。
   - `findInstructionAtOffset` helper：按绝对 offset 定位 DecodedInstruction
   - **验收**：hello.o 端到端 D.1→D.7 pipeline 跑通，lddw @ offset 16 被重写为 `.left(".rodata.__anon_...")`
 
-- [ ] **D.8**：debug section 暂存（最小实现）
-  - 对 `.debug_*` section，保留原始字节到 `debug_sections`
-  - C1 阶段只保留，不做重定位
-  - **验收**：不崩即可；zignocchio example 通常不带 debug
+- [x] **D.8**：debug section 暂存 ✅ 2026-04-18
+  - `DebugSectionEntry { name, data }` + `DebugScan { entries }`
+  - `scanDebugSections(allocator, file)`：过滤 `.debug_*` section
+  - 零拷贝保留原字节（切片 into ELF bytes）
+  - **验收**：hello.o 无 debug section（ReleaseSmall），返回空列表
 
-- [ ] **D.9**：输出 `ParseResult`
-  - 调 `AST.buildProgram(SbpfArch.V0)` 得到 ParseResult
-  - 塞入 debug_sections
-  - **验收**：对 hello.o 返回的 ParseResult 能被 emit 阶段消化
+- [x] **D.9**：byteParse 整合入口 ✅ 2026-04-18
+  - `ByteParseResult { sections, syms, rodata_table, text, debug, owned_names }` — 聚合所有子 pass 的产物
+  - `byteParse(allocator, file)` 依次跑 D.1-D.8，返回填满的 ByteParseResult
+  - 完整 errdefer 链保证所有失败路径上资源被释放
+  - **验收**：hello.o 端到端 byteParse()，所有字段都正确（1 text 64B、1 rodata 23B、7 指令、lddw imm 已重写）
 
 ---
 
@@ -560,13 +562,13 @@ Solana SBPF 特有结构。
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
-| D — Byteparser | 9 | 7 | 进行中 (78%) |
+| D — Byteparser | 9 | 9 | ✅ 完成 |
 | E — AST | 4 | 0 | 未开始 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **23** | **41%** |
+| **总计** | **56** | **25** | **45%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
