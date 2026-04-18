@@ -102,21 +102,35 @@
 
 **预估**：1 天
 
-### 子任务（粗稿）
+### 子任务
 
-- [ ] **D.4.1**：公开 `lib.zig` 的 `linkProgram` + `Program` +
-  `LinkError` 作为 stable API
-- [ ] **D.4.2**：`build.zig.zon` 补一个 exposed module 配置
-- [ ] **D.4.3**：在 zignocchio `build.zig` 草稿里加 `-Dlinker=zig-import`
-  路径（直接 import elf2sbpf module，不走子进程）
-- [ ] **D.4.4**：API 稳定性文档（`docs/library.md`），标注
-  v0.x 期间接口可能变
+- [x] **D.4.1**：module 已在 build.zig 里通过 `b.addModule("elf2sbpf",
+  ...)` 公开 ✅ 2026-04-18（infrastructure 早就就位）
+  - `lib.zig` 里 `linkProgram / Program / LinkError / AST /
+    ParseResult / SbpfArch / Instruction / byteparser` 等都 re-export
+  - 实测：创建 `/tmp/elf2sbpf-import-test/` synthetic consumer →
+    `zig fetch --save <path>` → `@import("elf2sbpf")` → 调用
+    `linkProgram` → 对 hello.o 产出**跟 shim golden 字节一致**
+
+- [x] **D.4.2**：`docs/library.md` ✅ 2026-04-18
+  - `zig fetch --save` 指引；`build.zig` 接入代码；consumer `main.zig`
+    示例；public API 稳定性表（✅ stable vs ⚠️ churn-eligible）；CLI
+    vs library 对比
+
+- [x] **D.4.3**：zignocchio `zig-import` 演示 ✅ 2026-04-18
+  - `docs/integrations/zignocchio-build.zig` 原本加了 3 分支 dispatch；
+    用户简化成 elf2sbpf-only 单路径（更干净的 PR 形态）
+  - `zig-import` 的消费模式示例留在 `docs/library.md` + 本仓库的
+    `tmp/elf2sbpf-import-test/` harness 里，非必须进 zignocchio PR
+
+- [x] **D.4.4**：集成测试 ✅ 2026-04-18
+  - 简化版 draft 对 9 个 example 实测 9/9 MATCH
 
 ### 验收
 
-- zignocchio 的 `build.zig.zon` 能 `zig fetch`
-- `zig build -Dlinker=zig-import` 产物跟 `-Dlinker=elf2sbpf`（子进程
-  路径）字节一致
+- ✅ 下游 Zig 项目能 `zig fetch --save` + `@import("elf2sbpf")` + 调用
+  `linkProgram` 产出 byte-identical to CLI path
+- ✅ 简化版 zignocchio build.zig 9/9 example MATCH
 
 ---
 
@@ -164,7 +178,7 @@ Phase 3/4/5。
 | D.1 V3 arch | 未开始（等触发条件） |
 | D.2 Debug info | ✅ 完成，v0.2.0 已发 |
 | D.3 Dynamic syscall | 未开始 |
-| D.4 Zig 库 API | 未开始（**接下来的 P0**） |
+| D.4 Zig 库 API | ✅ 完成（infra + docs；v0.3.0 release 进行中） |
 | D.5 Windows | 未开始 |
 | D.6 跨语言 | 战略愿景，不排期 |
 

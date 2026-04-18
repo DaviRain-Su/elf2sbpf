@@ -7,9 +7,47 @@ and [SemVer](https://semver.org/). Dates use the `YYYY-MM-DD` format.
 
 ## [Unreleased]
 
-- Pending feedback and follow-up work after the zignocchio PR lands.
-- Further D-stage items (D.4 Zig library API, D.3 dynamic syscall registry,
-  D.1 V3 arch) prioritized based on ecosystem demand.
+- D.3 dynamic syscall registry, D.1 V3 arch — prioritized based on
+  ecosystem demand.
+
+## [0.3.0] — 2026-04-18
+
+D.4 — Zig library API.
+
+### Added
+
+- **Documented public library API** (`docs/library.md`):
+  `zig fetch --save`, dependency + module wiring in `build.zig`,
+  full `linkProgram` usage example, stability-tier table (`✅ stable`
+  vs `⚠️ churn-eligible`), and CLI-vs-library decision guide
+- **Verified downstream consumer**: synthetic project depending on
+  elf2sbpf via `build.zig.zon` + `@import("elf2sbpf")` → calling
+  `linkProgram` → output byte-identical to CLI path (and to
+  `reference-shim` golden)
+
+### Changed
+
+- Simplified the zignocchio integration draft
+  (`docs/integrations/zignocchio-build.zig`) to a single
+  elf2sbpf-only path — no more `-Dlinker` dispatch, just
+  `zig build -Dexample=<name>`. Cleaner PR surface for upstream
+  adoption. All 9 zignocchio examples still produce byte-identical
+  `.so` through the draft
+
+### Stable public API (v0.x SemVer contract)
+
+```
+elf2sbpf.linkProgram(allocator, elf_bytes) → LinkError![]u8
+elf2sbpf.LinkError                          (error set)
+elf2sbpf.Program                            (struct, read-only OK)
+elf2sbpf.Program.fromParseResult(...)
+elf2sbpf.Program.emitBytecode(allocator) → ![]u8
+elf2sbpf.SbpfArch                           (enum V0 / V3)
+```
+
+Deeper internals (`byteparser.*`, `AST` / `ParseResult` shape,
+`Instruction` field details) are re-exported for framework authors
+but may evolve between minor versions — see `docs/library.md`.
 
 ## [0.2.0] — 2026-04-18
 
@@ -109,6 +147,7 @@ Ported from [blueshift-gg/sbpf-linker](https://github.com/blueshift-gg/sbpf-link
 
 ---
 
-[Unreleased]: https://github.com/DaviRain-Su/elf2sbpf/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/DaviRain-Su/elf2sbpf/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.3.0
 [0.2.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.2.0
 [0.1.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.1.0
