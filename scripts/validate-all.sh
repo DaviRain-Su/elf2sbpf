@@ -6,7 +6,8 @@
 #   2. Produce candidate .so via Zig .o + reference-shim
 #   3. cmp them
 #
-# Outputs a summary table: example | baseline ok | shim ok | bit-identical
+# Outputs a summary table:
+#   example | baseline | shim | zig | shim-vs-zig | bc-size | shim-size | zig-size
 
 set -uo pipefail
 
@@ -14,6 +15,7 @@ ZIGNOCCHIO_DIR="${ZIGNOCCHIO_DIR:-/Users/davirian/dev/active/zignocchio}"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="${REPO_DIR}/fixtures/validate-all"
 SHIM="${REPO_DIR}/reference-shim/target/release/elf2sbpf-shim"
+ZIG_BIN="${REPO_DIR}/zig-out/bin/elf2sbpf"
 
 if [ ! -x "${SHIM}" ]; then
   echo "[validate] building shim..." >&2
@@ -28,23 +30,33 @@ mkdir -p "${OUT_DIR}"
 
 EXAMPLES=(hello noop logonly counter vault transfer-sol pda-storage escrow token-vault)
 
-printf "\n%-16s  %-10s  %-10s  %-14s  %-10s  %s\n" "example" "baseline" "shim" "bit-identical" "bc-size" "obj-size"
-printf "%-16s  %-10s  %-10s  %-14s  %-10s  %s\n" "-------" "--------" "----" "-------------" "-------" "--------"
+if [ ! -x "${ZIG_BIN}" ]; then
+  echo "[validate] building zig elf2sbpf..." >&2
+  (cd "${REPO_DIR}" && zig build 2>&1 | tail -3)
+fi
+
+printf "\n%-16s  %-10s  %-10s  %-10s  %-14s  %-10s  %-10s  %s\n" \
+  "example" "baseline" "shim" "zig" "shim-vs-zig" "bc-size" "shim-size" "zig-size"
+printf "%-16s  %-10s  %-10s  %-10s  %-14s  %-10s  %-10s  %s\n" \
+  "-------" "--------" "----" "---" "-----------" "-------" "--------" "--------"
 
 for EX in "${EXAMPLES[@]}"; do
   BC="${OUT_DIR}/${EX}.bc"
   OBJ="${OUT_DIR}/${EX}.o"
   BC_SO="${OUT_DIR}/${EX}.bc.so"
   SHIM_SO="${OUT_DIR}/${EX}.shim.so"
+  ZIG_SO="${OUT_DIR}/${EX}.zig.so"
   LOG="${OUT_DIR}/${EX}.log"
 
-  rm -f "${BC}" "${OBJ}" "${BC_SO}" "${SHIM_SO}"
+  rm -f "${BC}" "${OBJ}" "${BC_SO}" "${SHIM_SO}" "${ZIG_SO}"
 
   BASELINE_OK="-"
   SHIM_OK="-"
-  BIT_MATCH="-"
+  SHIM_VS_ZIG="-"
+  ZIG_OK="-"
   BC_SIZE="-"
-  OBJ_SIZE="-"
+  SHIM_SIZE="-"
+  ZIG_SIZE="-"
 
   # --- bitcode path ---
   if (cd "${ZIGNOCCHIO_DIR}" && zig build-lib \
@@ -80,21 +92,30 @@ for EX in "${EXAMPLES[@]}"; do
         -c "${ZCC_BC}" -o "${OBJ}" >>"${LOG}" 2>&1 \
      && "${SHIM}" "${OBJ}" "${SHIM_SO}" >>"${LOG}" 2>&1; then
     SHIM_OK="ok"
-    OBJ_SIZE=$(stat -f%z "${SHIM_SO}" 2>/dev/null || stat -c%s "${SHIM_SO}")
+    SHIM_SIZE=$(stat -f%z "${SHIM_SO}" 2>/dev/null || stat -c%s "${SHIM_SO}")
   else
     SHIM_OK="FAIL"
   fi
 
-  if [ "${BASELINE_OK}" = "ok" ] && [ "${SHIM_OK}" = "ok" ]; then
-    if cmp -s "${BC_SO}" "${SHIM_SO}"; then
-      BIT_MATCH="MATCH"
+  # --- zig elf2sbpf path ---
+  if [ -x "${ZIG_BIN}" ] && [ -f "${OBJ}" ] \
+     && "${ZIG_BIN}" "${OBJ}" "${ZIG_SO}" >>"${LOG}" 2>&1; then
+    ZIG_OK="ok"
+    ZIG_SIZE=$(stat -f%z "${ZIG_SO}" 2>/dev/null || stat -c%s "${ZIG_SO}")
+  else
+    ZIG_OK="FAIL"
+  fi
+
+  if [ "${SHIM_OK}" = "ok" ] && [ "${ZIG_OK}" = "ok" ]; then
+    if cmp -s "${SHIM_SO}" "${ZIG_SO}"; then
+      SHIM_VS_ZIG="MATCH"
     else
-      BIT_MATCH="DIFFER"
+      SHIM_VS_ZIG="DIFFER"
     fi
   fi
 
-  printf "%-16s  %-10s  %-10s  %-14s  %-10s  %s\n" \
-    "${EX}" "${BASELINE_OK}" "${SHIM_OK}" "${BIT_MATCH}" "${BC_SIZE}" "${OBJ_SIZE}"
+  printf "%-16s  %-10s  %-10s  %-10s  %-14s  %-10s  %-10s  %s\n" \
+    "${EX}" "${BASELINE_OK}" "${SHIM_OK}" "${ZIG_OK}" "${SHIM_VS_ZIG}" "${BC_SIZE}" "${SHIM_SIZE}" "${ZIG_SIZE}"
 done
 
 echo
