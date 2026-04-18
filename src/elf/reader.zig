@@ -155,6 +155,14 @@ pub const ElfFile = struct {
         return symbol_mod.makeIter(self, kind);
     }
 
+    /// Iterator over the symbol table at a specific section index.
+    pub fn iterSymbolsAt(
+        self: *const ElfFile,
+        idx: u16,
+    ) symbol_mod.SymbolError!symbol_mod.SymbolIter {
+        return symbol_mod.makeIterAtIndex(self, idx);
+    }
+
     /// Iterator over relocations in the given SHT_REL/SHT_RELA section.
     pub fn iterRelocations(
         self: *const ElfFile,

@@ -145,6 +145,37 @@ pub const SymbolIter = struct {
     }
 };
 
+fn makeIterFromTableHeader(file: *const ElfFile, sh: elf.Elf64_Shdr) SymbolError!SymbolIter {
+    // Validate entry size and table bounds.
+    const ent: usize = @intCast(sh.sh_entsize);
+    const sz: usize = @intCast(sh.sh_size);
+    const off: usize = @intCast(sh.sh_offset);
+    if (ent != @sizeOf(elf.Elf64_Sym)) return SymbolError.CorruptSymbolTable;
+    if (off + sz > file.bytes.len) return SymbolError.CorruptSymbolTable;
+    if (sz % ent != 0) return SymbolError.CorruptSymbolTable;
+
+    const count: u32 = @intCast(sz / ent);
+
+    // Resolve linked string table via sh_link.
+    const link_raw = sh.sh_link;
+    if (link_raw > std.math.maxInt(u16)) return SymbolError.BadStringTable;
+    const link_idx: u16 = @intCast(link_raw);
+    if (link_idx >= file.sh_count) return SymbolError.BadStringTable;
+    const strtab_hdr = file.sectionHeaderAt(link_idx) catch return SymbolError.BadStringTable;
+    if (strtab_hdr.sh_type != elf.SHT_STRTAB) return SymbolError.BadStringTable;
+    const strtab_off: usize = @intCast(strtab_hdr.sh_offset);
+    const strtab_sz: usize = @intCast(strtab_hdr.sh_size);
+    if (strtab_off + strtab_sz > file.bytes.len) return SymbolError.BadStringTable;
+    const strtab = file.bytes[strtab_off .. strtab_off + strtab_sz];
+
+    return SymbolIter{
+        .file = file,
+        .table_offset = off,
+        .count = count,
+        .strtab = strtab,
+    };
+}
+
 /// Locate the symbol table (SHT_SYMTAB or SHT_DYNSYM), validate its layout
 /// and linked string table, and return a ready-to-use iterator.
 ///
@@ -161,38 +192,21 @@ pub fn makeIter(file: *const ElfFile, kind: SymTableKind) SymbolError!SymbolIter
     while (i < file.sh_count) : (i += 1) {
         const sh = file.sectionHeaderAt(i) catch continue;
         if (sh.sh_type != want_type) continue;
-
-        // Validate entry size and table bounds.
-        const ent: usize = @intCast(sh.sh_entsize);
-        const sz: usize = @intCast(sh.sh_size);
-        const off: usize = @intCast(sh.sh_offset);
-        if (ent != @sizeOf(elf.Elf64_Sym)) return SymbolError.CorruptSymbolTable;
-        if (off + sz > file.bytes.len) return SymbolError.CorruptSymbolTable;
-        if (sz % ent != 0) return SymbolError.CorruptSymbolTable;
-
-        const count: u32 = @intCast(sz / ent);
-
-        // Resolve linked string table via sh_link.
-        const link_raw = sh.sh_link;
-        if (link_raw > std.math.maxInt(u16)) return SymbolError.BadStringTable;
-        const link_idx: u16 = @intCast(link_raw);
-        if (link_idx >= file.sh_count) return SymbolError.BadStringTable;
-        const strtab_hdr = file.sectionHeaderAt(link_idx) catch return SymbolError.BadStringTable;
-        if (strtab_hdr.sh_type != elf.SHT_STRTAB) return SymbolError.BadStringTable;
-        const strtab_off: usize = @intCast(strtab_hdr.sh_offset);
-        const strtab_sz: usize = @intCast(strtab_hdr.sh_size);
-        if (strtab_off + strtab_sz > file.bytes.len) return SymbolError.BadStringTable;
-        const strtab = file.bytes[strtab_off .. strtab_off + strtab_sz];
-
-        return SymbolIter{
-            .file = file,
-            .table_offset = off,
-            .count = count,
-            .strtab = strtab,
-        };
+        return makeIterFromTableHeader(file, sh);
     }
 
     return SymbolError.NoSymbolTable;
+}
+
+/// Build an iterator from the symbol-table section index referenced by
+/// another ELF structure (for example, a relocation section's `sh_link`).
+pub fn makeIterAtIndex(file: *const ElfFile, idx: u16) SymbolError!SymbolIter {
+    const sh = file.sectionHeaderAt(idx) catch return SymbolError.NoSymbolTable;
+    switch (sh.sh_type) {
+        elf.SHT_SYMTAB, elf.SHT_DYNSYM => {},
+        else => return SymbolError.NoSymbolTable,
+    }
+    return makeIterFromTableHeader(file, sh);
 }
 
 // --- tests ---

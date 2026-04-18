@@ -276,16 +276,13 @@ test` 跑空测试。
   - **验收**：2 测试——insert 排序去重；hello.o 真数据：1 个 lddw addend = 0
   - **TODO**：counter.o 产 14 addend 的全量验证等 D.5 拼完 rodata_table 后再一起做
 
-- [ ] **D.4**：Gap-fill 算法（改进版）
-  - 计算每个 rodata section 的 anchor 集合：
-    `{0, section_size} ∪ {e.address, e.address+e.size for e in
-    named_entries} ∪ {t for t in lddw_targets if t < section_size}`
-  - 排序、去重
-  - 对每对相邻 anchor `[start, end)`，若此 start 没被已有 named
-    entry 占，合成一个 `.rodata.__anon_<section>_<start>` 条目
-  - **Sanity check**：lddw target 不能落在 named entry 内部（panic）
-  - **验收**：对 counter.o，产出 14 个匿名条目；对 hello.o 产出
-    1 个匿名条目；字节内容跟 Rust shim 一致
+- [x] **D.4**：Gap-fill 算法（改进版）✅ 2026-04-18
+  - `gapFillRodata(allocator, sections, targets, syms)` 写入 `syms.pending_rodata`
+  - 按 spec §6.2 Pass 2+3 实现：anchor 集合 = `{0, size} ∪ 命名端点 ∪ lddw_targets`
+  - Sanity check：lddw target 落在命名 entry 内部 → `error.LddwTargetInsideNamedEntry`
+  - 合成的 anon entries name 格式：`.rodata.__anon_<hex>_<hex>`，`name_owned=true`
+  - 最后按 `(section_idx, address)` 全排序
+  - **验收**：3 测试——hello.o 产 1 anon entry（23B "Hello from Zignocchio!"）；3 lddw 目标切 30B section 成 3 段；lddw 落命名 entry 内部返回错
 
 - [ ] **D.5**：合并并排序 `pending_rodata`，构建 `rodata_table`
   - `HashMap<(SectionIndex, u64), String>`
@@ -553,13 +550,13 @@ Solana SBPF 特有结构。
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
-| D — Byteparser | 9 | 3 | 进行中 (33%) |
+| D — Byteparser | 9 | 4 | 进行中 (44%) |
 | E — AST | 4 | 0 | 未开始 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **19** | **34%** |
+| **总计** | **56** | **20** | **36%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

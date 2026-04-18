@@ -444,6 +444,148 @@ pub fn collectLddwTargets(
     return targets;
 }
 
+/// Pass D.4: improved rodata gap-fill. For each ro_section, build an
+/// anchor set from:
+///   • 0 and section size
+///   • each named entry's [address, address+size] pair
+///   • each lddw target addend (truncated to inside-the-section)
+/// and synthesize an anon RodataEntry for every consecutive [start,end)
+/// window not already owned by a named entry.
+///
+/// Spec §6.2 Pass 2+3. Naming matches Rust byteparser convention:
+///     ".rodata.__anon_<section_idx_hex>_<offset_hex>"
+///
+/// Appends new entries into `syms.pending_rodata`. Entries created here
+/// carry `name_owned=true` so `SymbolScan.deinit` will free them.
+///
+/// Returns error.LddwTargetInsideNamedEntry if a lddw target falls strictly
+/// inside a named rodata symbol's range — this would require splitting a
+/// user-declared symbol, which no sane compiler emits.
+pub fn gapFillRodata(
+    allocator: std.mem.Allocator,
+    sections: *const SectionScan,
+    targets: *const LddwTargets,
+    syms: *SymbolScan,
+) !void {
+    for (sections.ro_sections.items) |ro_entry| {
+        const ro_sec = ro_entry.section;
+        const section_size = ro_sec.data.len;
+
+        // Collect this section's named entries, sorted by address.
+        var named: std.ArrayList(RodataEntry) = .empty;
+        defer named.deinit(allocator);
+        for (syms.pending_rodata.items) |e| {
+            if (e.section_index == ro_sec.index) {
+                try named.append(allocator, e);
+            }
+        }
+        std.mem.sort(RodataEntry, named.items, {}, struct {
+            fn lt(_: void, a: RodataEntry, b: RodataEntry) bool {
+                return a.address < b.address;
+            }
+        }.lt);
+
+        // Build the anchor set. Use an ArrayList + sort-dedupe for
+        // determinism. Could be done with a BTreeSet equivalent but N
+        // is small (section_size + few named + few addends).
+        var anchors: std.ArrayList(u64) = .empty;
+        defer anchors.deinit(allocator);
+
+        try anchors.append(allocator, 0);
+        try anchors.append(allocator, @intCast(section_size));
+
+        for (named.items) |e| {
+            try anchors.append(allocator, e.address);
+            try anchors.append(allocator, e.address + e.size);
+        }
+
+        if (targets.get(ro_sec.index)) |addends| {
+            for (addends) |t| {
+                if (t < section_size) {
+                    try anchors.append(allocator, t);
+                }
+            }
+        }
+
+        // Sort + dedupe.
+        std.mem.sort(u64, anchors.items, {}, std.sort.asc(u64));
+        var unique_end: usize = 0;
+        {
+            var idx: usize = 0;
+            while (idx < anchors.items.len) : (idx += 1) {
+                if (unique_end == 0 or anchors.items[idx] != anchors.items[unique_end - 1]) {
+                    anchors.items[unique_end] = anchors.items[idx];
+                    unique_end += 1;
+                }
+            }
+        }
+        const sorted_anchors = anchors.items[0..unique_end];
+
+        // Sanity check: no lddw target falls strictly inside a named entry.
+        if (targets.get(ro_sec.index)) |addends| {
+            for (named.items) |e| {
+                for (addends) |t| {
+                    if (t > e.address and t < e.address + e.size) {
+                        return error.LddwTargetInsideNamedEntry;
+                    }
+                }
+            }
+        }
+
+        // Walk consecutive anchor pairs; emit anon entries for gaps.
+        var w: usize = 0;
+        while (w + 1 < sorted_anchors.len) : (w += 1) {
+            const start = sorted_anchors[w];
+            const end = sorted_anchors[w + 1];
+            if (start >= end) continue;
+
+            // Skip if a named entry starts at `start` — it already owns
+            // this window.
+            var named_owns = false;
+            for (named.items) |e| {
+                if (e.address == start) {
+                    named_owns = true;
+                    break;
+                }
+            }
+            if (named_owns) continue;
+
+            const start_usize: usize = @intCast(start);
+            const end_usize: usize = @intCast(end);
+            const slice = ro_sec.data[start_usize..end_usize];
+
+            // Format anon name: ".rodata.__anon_<hex>_<hex>"
+            const name_owned = try std.fmt.allocPrint(
+                allocator,
+                ".rodata.__anon_{x}_{x}",
+                .{ ro_sec.index, start },
+            );
+            errdefer allocator.free(name_owned);
+
+            try syms.pending_rodata.append(allocator, .{
+                .section_index = ro_sec.index,
+                .address = start,
+                .size = end - start,
+                .name = name_owned,
+                .name_owned = true,
+                .bytes = slice,
+            });
+        }
+    }
+
+    // After appending anons, sort the whole pending_rodata list by
+    // (section_index, address) — downstream consumers (D.5 rodata_table)
+    // expect this.
+    std.mem.sort(RodataEntry, syms.pending_rodata.items, {}, struct {
+        fn lt(_: void, a: RodataEntry, b: RodataEntry) bool {
+            if (a.section_index != b.section_index) {
+                return a.section_index < b.section_index;
+            }
+            return a.address < b.address;
+        }
+    }.lt);
+}
+
 // --- tests ---
 
 const testing = std.testing;
@@ -540,11 +682,16 @@ test "scanSymbols: hello.o finds entrypoint + no named rodata" {
 test "scanSymbols: no symtab → empty scan" {
     // Minimal header with no sections at all.
     var out: [@sizeOf(std.elf.Elf64_Ehdr)]u8 = @splat(0);
-    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[0] = 0x7f;
+    out[1] = 'E';
+    out[2] = 'L';
+    out[3] = 'F';
     out[std.elf.EI.CLASS] = std.elf.ELFCLASS64;
     out[std.elf.EI.DATA] = std.elf.ELFDATA2LSB;
     out[std.elf.EI.VERSION] = 1;
-    out[16] = 3; out[18] = 247; out[20] = 1;
+    out[16] = 3;
+    out[18] = 247;
+    out[20] = 1;
     out[52] = 64;
     out[58] = 64;
 
@@ -610,4 +757,139 @@ test "collectLddwTargets: hello.o finds 1 lddw addend at offset 0" {
     const rodata_idx = sections.ro_sections.items[0].section.index;
     const addends = targets.get(rodata_idx).?;
     try testing.expectEqualSlices(u64, &.{0}, addends);
+}
+
+test "gapFillRodata: hello.o synthesizes 1 anon entry covering the whole rodata" {
+    const hello_bytes = @embedFile("../testdata/hello.o");
+    const file = try elf_mod.ElfFile.parse(hello_bytes);
+
+    var sections = try scanSections(testing.allocator, &file);
+    defer sections.deinit();
+    var syms = try scanSymbols(testing.allocator, &file, &sections);
+    defer syms.deinit();
+    var targets = try collectLddwTargets(testing.allocator, &file, &sections);
+    defer targets.deinit();
+
+    try testing.expectEqual(@as(usize, 0), syms.pending_rodata.items.len);
+
+    try gapFillRodata(testing.allocator, &sections, &targets, &syms);
+
+    // After gap-fill: one anon entry for the [0, rodata_size) range.
+    // hello.o's .rodata.str1.1 is 0x17 = 23 bytes ("Hello from Zignocchio!\0")
+    try testing.expectEqual(@as(usize, 1), syms.pending_rodata.items.len);
+    const e = syms.pending_rodata.items[0];
+    try testing.expectEqual(@as(u64, 0), e.address);
+    try testing.expectEqual(@as(u64, 23), e.size);
+    try testing.expect(e.name_owned);
+    try testing.expect(std.mem.startsWith(u8, e.name, ".rodata.__anon_"));
+    try testing.expectEqual(@as(usize, 23), e.bytes.len);
+    try testing.expectEqual(@as(u8, 'H'), e.bytes[0]);
+}
+
+test "gapFillRodata: anchor subdivision with multiple lddw targets" {
+    // Synthesize a scenario without a real ELF: empty named set,
+    // rodata of 30 bytes, lddw targets at offsets 0, 8, 16.
+    // Expected: 3 anon entries covering [0,8), [8,16), [16,30).
+    const fake_data = "Hello world! zignocchio rodata"; // 30 bytes
+    try testing.expectEqual(@as(usize, 30), fake_data.len);
+
+    // Build a minimal SectionScan with one fake rodata section.
+    var scan: SectionScan = .{
+        .allocator = testing.allocator,
+        .ro_sections = .empty,
+        .text_bases = .empty,
+        .total_text_size = 0,
+    };
+    defer scan.deinit();
+
+    // Fake Section — only `index`, `name`, `data`, and `header.sh_size` matter
+    // to gap-fill. `header` is otherwise ignored.
+    var fake_hdr: std.elf.Elf64_Shdr = undefined;
+    @memset(std.mem.asBytes(&fake_hdr), 0);
+    fake_hdr.sh_size = 30;
+
+    try scan.ro_sections.append(testing.allocator, .{
+        .section = .{
+            .index = 5,
+            .header = fake_hdr,
+            .name = ".rodata",
+            .data = fake_data,
+        },
+    });
+
+    var targets = LddwTargets.init(testing.allocator);
+    defer targets.deinit();
+    try targets.insert(5, 0);
+    try targets.insert(5, 8);
+    try targets.insert(5, 16);
+
+    var syms: SymbolScan = .{
+        .allocator = testing.allocator,
+        .pending_rodata = .empty,
+        .text_labels = .empty,
+        .entry_label = null,
+    };
+    defer syms.deinit();
+
+    try gapFillRodata(testing.allocator, &scan, &targets, &syms);
+
+    try testing.expectEqual(@as(usize, 3), syms.pending_rodata.items.len);
+    try testing.expectEqual(@as(u64, 0), syms.pending_rodata.items[0].address);
+    try testing.expectEqual(@as(u64, 8), syms.pending_rodata.items[0].size);
+    try testing.expectEqual(@as(u64, 8), syms.pending_rodata.items[1].address);
+    try testing.expectEqual(@as(u64, 8), syms.pending_rodata.items[1].size);
+    try testing.expectEqual(@as(u64, 16), syms.pending_rodata.items[2].address);
+    try testing.expectEqual(@as(u64, 14), syms.pending_rodata.items[2].size);
+}
+
+test "gapFillRodata: rejects lddw target inside a named entry" {
+    var scan: SectionScan = .{
+        .allocator = testing.allocator,
+        .ro_sections = .empty,
+        .text_bases = .empty,
+        .total_text_size = 0,
+    };
+    defer scan.deinit();
+
+    var fake_hdr: std.elf.Elf64_Shdr = undefined;
+    @memset(std.mem.asBytes(&fake_hdr), 0);
+    fake_hdr.sh_size = 20;
+
+    const fake_data = "01234567890123456789";
+    try scan.ro_sections.append(testing.allocator, .{
+        .section = .{
+            .index = 5,
+            .header = fake_hdr,
+            .name = ".rodata",
+            .data = fake_data,
+        },
+    });
+
+    var targets = LddwTargets.init(testing.allocator);
+    defer targets.deinit();
+    // A lddw target at offset 5 — falls strictly inside the named entry
+    // at [0, 10).
+    try targets.insert(5, 5);
+
+    var syms: SymbolScan = .{
+        .allocator = testing.allocator,
+        .pending_rodata = .empty,
+        .text_labels = .empty,
+        .entry_label = null,
+    };
+    defer syms.deinit();
+
+    try syms.pending_rodata.append(testing.allocator, .{
+        .section_index = 5,
+        .address = 0,
+        .size = 10,
+        .name = "EXPECTED",
+        .name_owned = false,
+        .bytes = fake_data[0..10],
+    });
+
+    try testing.expectError(
+        error.LddwTargetInsideNamedEntry,
+        gapFillRodata(testing.allocator, &scan, &targets, &syms),
+    );
 }

@@ -1215,6 +1215,100 @@ let addend = match node.imm {
 用 D.2 的 pending_rodata + D.3 的 lddw_targets，按 anchor 集合切分
 每个 ro_section，合成命名的 anon entries 填满所有 gap。
 
+---
+
+## C1-D.4 — 改进版 rodata gap-fill
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 做的事
+
+1. 主函数 `gapFillRodata(allocator, sections, targets, syms)`
+   - **写入**：扩展 `syms.pending_rodata`，不返回新结构
+   - 对每个 ro_section 独立处理：
+     1. 从 pending_rodata 过滤出本 section 的命名 entries，按 address 排序
+     2. 构造 anchor 集合：`{0, size} ∪ 命名 start/end ∪ lddw_targets`
+     3. 排序 + 去重
+     4. Sanity check：lddw target 不能 strictly inside 命名 entry → 否则 `LddwTargetInsideNamedEntry`
+     5. 对每对相邻 anchor `[start, end)`，如果该 start 未被命名 entry 覆盖，就合成 anon entry
+   - 合成名字：`.rodata.__anon_<sec_idx_hex>_<start_hex>`
+   - 最后 `pending_rodata` 按 `(section_idx, address)` 全排序
+
+2. 3 个测试：
+   - hello.o 真数据：0 命名 + 1 lddw target @ 0 → 1 个 23B anon 覆盖全 section
+   - 合成：0 命名 + 3 lddw targets (0/8/16) + 30B section → 3 段 anon
+   - 反面：lddw target 落在命名 entry 内部 → 返回错
+
+### Zig ArrayList 细节
+
+`std.mem.sort` 就地排序 ArrayList.items：
+
+```zig
+std.mem.sort(RodataEntry, named.items, {}, struct {
+    fn lt(_: void, a: RodataEntry, b: RodataEntry) bool {
+        return a.address < b.address;
+    }
+}.lt);
+```
+
+内联 struct 是 Zig 0.16 标准 lambda 模式——`std.sort.asc(T)` 内建只给
+基础数值类型用，struct 排序要这样写。
+
+### "anchor 去重" 算法
+
+因为 `std.ArrayList` 0.16 没有 `dedup`，手写了 in-place dedupe：
+
+```zig
+var unique_end: usize = 0;
+{
+    var idx: usize = 0;
+    while (idx < anchors.items.len) : (idx += 1) {
+        if (unique_end == 0 or anchors.items[idx] != anchors.items[unique_end - 1]) {
+            anchors.items[unique_end] = anchors.items[idx];
+            unique_end += 1;
+        }
+    }
+}
+const sorted_anchors = anchors.items[0..unique_end];
+```
+
+O(n) 单趟扫描。
+
+### 关键改进点的验证
+
+这是 C0-findings 里承诺要修的 byteparser.rs bug——**原版对单 STT_SECTION 符号的
+rodata 只产一个 anchor=0 的 anon entry**，导致多字符串 rodata 的 lddw 查表失败。
+
+我们的版本：对每个 lddw target 都加 anchor，切分 section，所以每个 addend
+都有对应 entry。对 counter.o 这种场景就是解锁点——**D.5 rodata_table 构建完后，
+就能验证 lddw→label 映射**。
+
+### 验收
+
+- [x] 3 测试全绿
+- [x] `zig build test --summary all`：**98/98** 全绿（累计）
+- [x] spec §6.2 Pass 2+3 完整实现
+
+### Epic D 进度
+
+- D.1 ✅ scanSections
+- D.2 ✅ scanSymbols (pending_rodata + text_labels)
+- D.3 ✅ collectLddwTargets
+- D.4 ✅ gapFillRodata
+- D.5 构建 rodata_table（下一步）
+- D.6 decode text instructions
+- D.7 relocation rewrite
+- D.8 debug section stash
+- D.9 AST.buildProgram wrapper
+
+### 下一任务
+
+**D.5** 构建 `rodata_table: HashMap<(section_idx, address), name>`。设 rodata_offset
+起始为 0；遍历排序后的 pending_rodata，分配连续 offset；emit 成 `ASTNode::ROData`
+形式（节点类型先占位，Epic E 实现）。
+
+
 
 
 
