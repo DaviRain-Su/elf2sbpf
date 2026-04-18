@@ -21,6 +21,7 @@ const section_mod = @import("../elf/section.zig");
 const symbol_mod = @import("../elf/symbol.zig");
 const reloc_mod = @import("../elf/reloc.zig");
 const instruction_mod = @import("../common/instruction.zig");
+const opcode_mod = @import("../common/opcode.zig");
 
 pub const ParseError = error{
     InvalidElf,
@@ -708,6 +709,98 @@ pub fn buildRodataTable(
     };
 }
 
+/// Errors from text-stream decoding (D.6).
+pub const DecodeTextError = error{
+    /// .text section size isn't a multiple of instruction size; a
+    /// trailing fragment smaller than 8 bytes would indicate a
+    /// truncated lddw or misaligned section.
+    TextSectionMisaligned,
+    /// An instruction decode failed — wraps InstructionDecodeError
+    /// from common/instruction.zig.
+    InstructionDecodeFailed,
+    OutOfMemory,
+};
+
+/// A single decoded text instruction tagged with its absolute position
+/// in the merged text image. Mirrors the ASTNode::Instruction variant
+/// Rust byteparser emits at byteparser.rs L209-213.
+pub const DecodedInstruction = struct {
+    /// Byte offset within the **merged** .text image:
+    /// `section_base + offset_within_section`.
+    offset: u64,
+    /// The decoded instruction. Owns no heap memory — strings and
+    /// Number payloads are inline or reference the input bytes.
+    instruction: instruction_mod.Instruction,
+    /// Which ELF section index this instruction came from — used by
+    /// D.7 to resolve relocation targets back to a per-section offset.
+    source_section: u16,
+};
+
+/// Output of the text-decode pass (D.6).
+pub const TextScan = struct {
+    allocator: std.mem.Allocator,
+    /// All decoded instructions in merged order. Sorted by `offset`
+    /// by construction (we walk sections in ELF order with a running
+    /// offset accumulator).
+    instructions: std.ArrayList(DecodedInstruction),
+
+    pub fn deinit(self: *TextScan) void {
+        self.instructions.deinit(self.allocator);
+    }
+};
+
+/// Pass D.6: decode every .text* section into a flat
+/// `TextScan.instructions` list. Each instruction carries its
+/// absolute offset in the merged text image.
+///
+/// Step sizes:
+///   - lddw (opcode 0x18) consumes 16 bytes
+///   - every other opcode consumes 8 bytes
+///
+/// Failures:
+///   - Unknown opcode → `InstructionDecodeFailed`
+///   - A section whose remaining bytes < required step → `TextSectionMisaligned`
+///
+/// Mirrors Rust byteparser.rs L197-215.
+pub fn decodeTextSections(
+    allocator: std.mem.Allocator,
+    sections: *const SectionScan,
+) DecodeTextError!TextScan {
+    var instructions: std.ArrayList(DecodedInstruction) = .empty;
+    errdefer instructions.deinit(allocator);
+
+    for (sections.text_bases.items) |tb| {
+        const data = tb.section.data;
+        var off: usize = 0;
+        while (off < data.len) {
+            const remaining = data[off..];
+            const inst = instruction_mod.Instruction.fromBytes(remaining) catch
+                return DecodeTextError.InstructionDecodeFailed;
+            const size: usize = @intCast(inst.getSize());
+
+            // Guard: section must contain at least one full instruction
+            // from this offset. If not (e.g. a truncated lddw), surface
+            // it as a misalignment.
+            if (off + size > data.len) {
+                return DecodeTextError.TextSectionMisaligned;
+            }
+
+            try instructions.append(allocator, .{
+                .offset = tb.base_offset + @as(u64, off),
+                .instruction = inst,
+                .source_section = tb.section.index,
+            });
+
+            off += size;
+        }
+    }
+
+    return TextScan{
+        .allocator = allocator,
+        .instructions = instructions,
+    };
+}
+
 // --- tests ---
 
 const testing = std.testing;
@@ -1026,17 +1119,20 @@ test "scanSymbols: no symtab → empty scan" {
 }
 
 test "scanSections: multiple text sections accumulate base offsets" {
-    // We don't have a fixture with multiple .text* sections today, so
-    // verify the accumulator logic with a synthetic ELF.
-    // This uses the test helper from elf/section.zig indirectly — we
-    // inline a minimal 3-text-section builder here to avoid exporting
-    // internals from section.zig.
+    const bytes = makeMultiTextElf();
+    const file = try elf_mod.ElfFile.parse(&bytes);
 
-    // For now, a simpler check: empty ELF → zero totals.
-    // (A full synthetic multi-text ELF is D.6's concern once instruction
-    // decoding needs to straddle section boundaries.)
-    //
-    // Skipped for D.1; revisit in D.6 integration.
+    var scan = try scanSections(testing.allocator, &file);
+    defer scan.deinit();
+
+    try testing.expectEqual(@as(usize, 3), scan.text_bases.items.len);
+    try testing.expectEqual(@as(u64, 28), scan.total_text_size);
+    try testing.expectEqual(@as(u64, 0), scan.text_bases.items[0].base_offset);
+    try testing.expectEqual(@as(u64, 8), scan.text_bases.items[1].base_offset);
+    try testing.expectEqual(@as(u64, 24), scan.text_bases.items[2].base_offset);
+    try testing.expectEqualStrings(".text", scan.text_bases.items[0].section.name);
+    try testing.expectEqualStrings(".text.foo", scan.text_bases.items[1].section.name);
+    try testing.expectEqualStrings(".text.bar", scan.text_bases.items[2].section.name);
 }
 
 test "LddwTargets: insert maintains sorted-unique invariant" {
@@ -1075,6 +1171,36 @@ test "collectLddwTargets: hello.o finds 1 lddw addend at offset 0" {
     const rodata_idx = sections.ro_sections.items[0].section.index;
     const addends = targets.get(rodata_idx).?;
     try testing.expectEqualSlices(u64, &.{0}, addends);
+}
+
+test "collectLddwTargets: follows relocation-linked dynsym table" {
+    const bytes = makeRelDynsymElf();
+    const file = try elf_mod.ElfFile.parse(&bytes);
+
+    var sections = try scanSections(testing.allocator, &file);
+    defer sections.deinit();
+
+    var targets = try collectLddwTargets(testing.allocator, &file, &sections);
+    defer targets.deinit();
+
+    const rodata_idx = sections.ro_sections.items[0].section.index;
+    const addends = targets.get(rodata_idx).?;
+    try testing.expectEqualSlices(u64, &.{3}, addends);
+}
+
+test "collectLddwTargets: uses explicit RELA addend for lddw targets" {
+    const bytes = makeRelaLddwElf();
+    const file = try elf_mod.ElfFile.parse(&bytes);
+
+    var sections = try scanSections(testing.allocator, &file);
+    defer sections.deinit();
+
+    var targets = try collectLddwTargets(testing.allocator, &file, &sections);
+    defer targets.deinit();
+
+    const rodata_idx = sections.ro_sections.items[0].section.index;
+    const addends = targets.get(rodata_idx).?;
+    try testing.expectEqualSlices(u64, &.{9}, addends);
 }
 
 test "gapFillRodata: hello.o synthesizes 1 anon entry covering the whole rodata" {
@@ -1296,4 +1422,60 @@ test "gapFillRodata: rejects lddw target inside a named entry" {
         error.LddwTargetInsideNamedEntry,
         gapFillRodata(testing.allocator, &scan, &targets, &syms),
     );
+}
+
+test "decodeTextSections: hello.o yields 7 instructions with correct offsets" {
+    const hello_bytes = @embedFile("../testdata/hello.o");
+    const file = try elf_mod.ElfFile.parse(hello_bytes);
+
+    var sections = try scanSections(testing.allocator, &file);
+    defer sections.deinit();
+
+    var text_scan = try decodeTextSections(testing.allocator, &sections);
+    defer text_scan.deinit();
+
+    // hello.o has 7 instructions totaling 64 bytes (1 lddw + 6 regular).
+    try testing.expectEqual(@as(usize, 7), text_scan.instructions.items.len);
+
+    // First instruction: r1 = *(u64 *)(r1 + 0x0)  — Ldxdw
+    const ins0 = text_scan.instructions.items[0];
+    try testing.expectEqual(@as(u64, 0), ins0.offset);
+    try testing.expectEqual(opcode_mod.Opcode.Ldxdw, ins0.instruction.opcode);
+
+    // Third instruction: lddw r1, 0x0  (16-byte wide)
+    const ins2 = text_scan.instructions.items[2];
+    try testing.expectEqual(@as(u64, 16), ins2.offset);
+    try testing.expectEqual(opcode_mod.Opcode.Lddw, ins2.instruction.opcode);
+    try testing.expectEqual(@as(u64, 16), ins2.instruction.getSize());
+
+    // Next instruction after lddw sits at offset 32 (16 + 16), not 24.
+    const ins3 = text_scan.instructions.items[3];
+    try testing.expectEqual(@as(u64, 32), ins3.offset);
+    try testing.expectEqual(opcode_mod.Opcode.Mov64Imm, ins3.instruction.opcode);
+
+    // Final instruction: exit at offset 56.
+    const ins6 = text_scan.instructions.items[6];
+    try testing.expectEqual(@as(u64, 56), ins6.offset);
+    try testing.expectEqual(opcode_mod.Opcode.Exit, ins6.instruction.opcode);
+}
+
+test "decodeTextSections: empty text section yields empty result" {
+    // Minimal ELF with no sections — no text, no instructions.
+    var out: [@sizeOf(std.elf.Elf64_Ehdr)]u8 = @splat(0);
+    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[std.elf.EI.CLASS] = std.elf.ELFCLASS64;
+    out[std.elf.EI.DATA] = std.elf.ELFDATA2LSB;
+    out[std.elf.EI.VERSION] = 1;
+    out[16] = 3; out[18] = 247; out[20] = 1;
+    out[52] = 64;
+    out[58] = 64;
+
+    const file = try elf_mod.ElfFile.parse(&out);
+    var sections = try scanSections(testing.allocator, &file);
+    defer sections.deinit();
+
+    var text_scan = try decodeTextSections(testing.allocator, &sections);
+    defer text_scan.deinit();
+
+    try testing.expectEqual(@as(usize, 0), text_scan.instructions.items.len);
 }

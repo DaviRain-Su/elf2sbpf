@@ -1363,6 +1363,73 @@ rodata 只产一个 anchor=0 的 anon entry**，导致多字符串 rodata 的 ld
 绝对 offset（section_base + 节内偏移）。用 D.1 的 text_bases + B.6 的
 `Instruction.fromBytes`——这两件事 Epic B/C 已经做过，D.6 只是调用。
 
+---
+
+## C1-D.6 — text 指令流解码
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 做的事
+
+1. 新增 3 个类型：
+   - `DecodeTextError` —— 3 个变体（InstructionDecodeFailed / TextSectionMisaligned / OutOfMemory）
+   - `DecodedInstruction { offset, instruction, source_section }` —— 带绝对 offset + 来源 section 索引（D.7 会用 source_section 反查 per-section 偏移）
+   - `TextScan { instructions }` —— owner 结构
+
+2. `decodeTextSections(allocator, sections)` 主入口：
+   - 遍历每个 text_bases entry
+   - 调 `Instruction.fromBytes` 解码
+   - 按 `inst.getSize()` 步进（lddw 16、其他 8）
+   - 记录 `base_offset + inner_offset`
+
+3. 2 个测试：
+   - hello.o 真数据：7 条指令，offset 0/8/16/32/40/48/56 全对
+     （第 2 条是 lddw @ 16，占 16B，下条 @ 32 不是 24）
+   - 空 text 产出空结果
+
+### 踩两个坑
+
+**坑 1：`i0` 是 Zig 0.16 保留的原语类型名**
+
+写测试的时候用了 `const i0 = ...`，Zig 报 `name shadows primitive 'i0'`。
+0.16 里任意 `i<N>` / `u<N>` 都会占用变量命名空间。Rename 成 `ins0` 解决。
+
+**坑 2：Opcode 引用路径**
+
+测试里写 `instruction_mod.Opcode.Ldxdw` 失败——`instruction.zig` 里
+把 `Opcode` 作为**私有** `const` 导入，没 re-export。正确路径是直接
+引 `opcode_mod.Opcode`。
+
+**启示**：之前 re-export 惯例是"所有类型都 pub"，但 instruction.zig 把
+Opcode 作为 internal 依赖没再 re-export。保持当前设计（模块只 pub
+自己声明的类型），用户要 Opcode 就从 `common/opcode.zig` 直接引。
+
+### 验收
+
+- [x] 2 D.6 测试 + 2 linter 补的测试全绿
+- [x] `zig build test --summary all`：**104/104** 全绿
+- [x] hello.o 的 7 条指令 offset 完全跟 llvm-objdump 对得上
+
+### Epic D 进度
+
+- D.1-D.6 ✅
+- D.7 relocation 重写（下一步）
+- D.8 debug section
+- D.9 AST.buildProgram wrapper
+
+### 下一任务
+
+**D.7** — 遍历所有 text relocations，重写 lddw.imm / call.imm 字段：
+- lddw + rodata target → `imm = Either.left(rodata_table[key].name)`
+- call + text target → `imm = Either.left(text_label_name)`
+- call + rodata target（STT_SECTION）→ 通过 addend 查命名符号
+
+这一步需要用 **D.5 rodata_table** + **D.2 text_labels**。核心算法
+复杂度在：按 relocation offset 找 TextScan 里的那条 Instruction，
+然后改它。
+
+
 
 
 

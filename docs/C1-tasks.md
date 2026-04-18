@@ -292,12 +292,15 @@ test` 跑空测试。
   - `find(key)`、`nameAt`、`offsetAt` 查询 API
   - **验收**：2 测试——hello.o 1 entry @ offset 0 total 23B；3-split 合成数据 offset 0/8/16 total 30B
 
-- [ ] **D.6**：Text 指令解析
-  - 对每个 text section 的 data，逐字节 decode 成 `Instruction`
-  - lddw 16 字节，其他 8 字节
-  - emit 成 `ASTNode::Instruction { offset: section_base + offset, ... }`
-  - **验收**：hello.o 的 8 条指令全部 decode 成功，跟
-    llvm-objdump 对比
+- [x] **D.6**：Text 指令解析 ✅ 2026-04-18
+  - `DecodedInstruction { offset, instruction, source_section }` — 带绝对 offset + 来源 section 索引
+  - `TextScan { instructions }` 持有者结构
+  - `decodeTextSections(allocator, sections)` 主入口
+    - 遍历每个 text section，调 `Instruction.fromBytes`
+    - 按 `inst.getSize()` 步进（lddw 16B，其他 8B）
+    - 记录 `base_offset + inner_offset` 作为绝对 offset
+  - `DecodeTextError`：InstructionDecodeFailed / TextSectionMisaligned / OutOfMemory
+  - **验收**：2 测试——hello.o 7 条指令 offsets 0/8/16/32/40/48/56 全对（lddw @ 16 占用 2 slots）；空 text 空结果
 
 - [ ] **D.7**：Relocation 重写
   - lddw：rodata_table 查找 → `node.imm = Either.left(ro_label)`
@@ -553,13 +556,13 @@ Solana SBPF 特有结构。
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
-| D — Byteparser | 9 | 5 | 进行中 (56%) |
+| D — Byteparser | 9 | 6 | 进行中 (67%) |
 | E — AST | 4 | 0 | 未开始 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **21** | **38%** |
+| **总计** | **56** | **22** | **39%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
