@@ -91,10 +91,10 @@ pub const ShStrTabSection = struct {
         self.offset = o;
     }
 
-    /// Size in bytes of the string table content, **without** trailing
-    /// 8-byte padding (matches Rust's `size()` at L276-289). The padding
-    /// in bytecode() is Emit-layer alignment convenience; downstream
-    /// offsetting should use this unpadded size.
+    /// Unpadded logical byte count — leading null + each non-empty name
+    /// + null terminator + the implicit ".s" trailer. This is what
+    /// section_header_bytecode reports as `sh_size` (matches Rust's
+    /// `size()` return value at L276-289).
     pub fn size(self: ShStrTabSection) u64 {
         var total: u64 = 1; // leading null byte
         for (self.section_names) |n| {
@@ -104,6 +104,13 @@ pub const ShStrTabSection = struct {
         // Include the implicit ".s" entry.
         total += 2 + 1; // ".s" length 2 + null
         return total;
+    }
+
+    /// Bytes actually emitted by `bytecode()` — unpadded size rounded
+    /// up to the next 8-byte boundary. Use this for file-offset
+    /// tracking in the layout pass.
+    pub fn paddedSize(self: ShStrTabSection) u64 {
+        return (self.size() + 7) & ~@as(u64, 7);
     }
 
     /// Emit: leading null byte + each non-empty name + null terminator,
@@ -719,12 +726,15 @@ pub const SectionType = union(enum) {
         };
     }
 
+    /// Bytes actually written by `bytecode()`. Padded sizes for
+    /// ShStrTab / Data; raw sizes for the rest (already 8-aligned or
+    /// never padded).
     pub fn size(self: SectionType) u64 {
         return switch (self) {
             .null_ => |s| s.size(),
-            .shstrtab => |s| s.size(),
+            .shstrtab => |s| s.paddedSize(),
             .code => |s| s.size,
-            .data => |s| s.size,
+            .data => |s| s.alignedSize(),
             .dynsym => |s| s.size(),
             .dynstr => |s| s.size(),
             .dynamic => |s| s.size(),
@@ -1224,7 +1234,8 @@ test "SectionType: dispatches name/size through each variant" {
 
     const ds: SectionType = .{ .data = DataSection{ .nodes = &.{}, .size = 5 } };
     try testing.expectEqualStrings(".rodata", ds.name());
-    try testing.expectEqual(@as(u64, 5), ds.size());
+    // Union dispatch returns emit-accurate (padded) size: 5 → 8.
+    try testing.expectEqual(@as(u64, 8), ds.size());
 
     const debug_payload = [_]u8{ 1, 2, 3, 4 };
     const dbg: SectionType = .{ .debug = DebugSection{

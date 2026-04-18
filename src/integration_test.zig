@@ -23,6 +23,7 @@ const SymTableKind = lib.SymTableKind;
 const RelocType = lib.RelocType;
 
 const hello_bytes = @embedFile("testdata/hello.o");
+const hello_shim_so = @embedFile("testdata/hello-shim.so");
 
 test "integration: hello.o parses as valid BPF ELF" {
     const file = try ElfFile.parse(hello_bytes);
@@ -133,4 +134,69 @@ test "integration: hello.o .text decodes as 7 valid instructions (with 1 lddw)" 
     try testing.expectEqual(@as(usize, 7), count);
     try testing.expectEqual(@as(usize, 1), lddw_count);
     try testing.expectEqual(@as(usize, 64), off);
+}
+
+// ---------------------------------------------------------------------------
+// G.4 — end-to-end pipeline: hello.o → Program.emitBytecode → byte-diff
+// against reference-shim golden output (testdata/hello-shim.so).
+// ---------------------------------------------------------------------------
+
+/// End-to-end: parse ELF bytes → byteparser → AST → buildProgram →
+/// Program.fromParseResult → emitBytecode. Caller owns the returned bytes.
+fn runPipeline(allocator: std.mem.Allocator, elf_bytes: []const u8) ![]u8 {
+    const elf_file = try lib.ElfFile.parse(elf_bytes);
+
+    var bpr = try lib.byteparser.byteParse(allocator, &elf_file);
+    defer bpr.deinit();
+
+    var ast = try lib.AST.fromByteParse(allocator, &bpr);
+    // buildProgram consumes ast.nodes/rodata_nodes; keep the AST handle
+    // alive for the remaining (now-empty) list teardown.
+
+    // Empty, allocator-owned debug_sections — G.2 skips debug reuse so
+    // this is OK until the debug path lands.
+    const empty_debug = try allocator.alloc(lib.ast.DebugSection, 0);
+
+    var parse_result = try ast.buildProgram(.V0, empty_debug);
+    // ParseResult owns the rest; ast itself is now empty.
+    ast.deinit();
+
+    defer parse_result.deinit(allocator);
+
+    var program = try lib.Program.fromParseResult(allocator, &parse_result);
+    defer program.deinit(allocator);
+
+    return try program.emitBytecode(allocator);
+}
+
+test "integration: hello.o emitBytecode produces a valid ELF" {
+    const allocator = testing.allocator;
+
+    const bytes = try runPipeline(allocator, hello_bytes);
+    defer allocator.free(bytes);
+
+    // Must be a well-formed ELF with 3 program headers (V0 dynamic) and
+    // enough sections to cover the dynamic layout.
+    try testing.expectEqualSlices(u8, "\x7fELF", bytes[0..4]);
+    const e_phnum = std.mem.readInt(u16, bytes[56..58], .little);
+    try testing.expectEqual(@as(u16, 3), e_phnum);
+
+    const e_shnum = std.mem.readInt(u16, bytes[60..62], .little);
+    try testing.expect(e_shnum >= 7); // at least Null+Code+Dyn+Sym+Str+Rel+ShStrTab
+    const e_shoff = std.mem.readInt(u64, bytes[40..48], .little);
+    try testing.expectEqual(bytes.len, e_shoff + @as(u64, e_shnum) * 64);
+}
+
+test "integration: hello.o emitBytecode matches reference-shim golden output" {
+    const allocator = testing.allocator;
+
+    const bytes = try runPipeline(allocator, hello_bytes);
+    defer allocator.free(bytes);
+
+    // Byte-for-byte equality with the reference-shim's hello.o output.
+    // This is the headline C1 milestone (per PRD D.6): Zig port and the
+    // Rust shim produce the same .so bytes. Any regression here indicates
+    // a divergence in byteparser / buildProgram / Program layout.
+    try testing.expectEqual(hello_shim_so.len, bytes.len);
+    try testing.expectEqualSlices(u8, hello_shim_so, bytes);
 }

@@ -508,16 +508,24 @@ Solana SBPF 特有结构。
   - **验收**：3 新单测（V0 static minimal、V3 no-rodata、V0 dynamic
     with syscall 全链路）
 
-- [ ] **G.3**：`emit/program.zig` — `emitBytecode() []u8`
-  - 按顺序 emit：ELF header → program headers → section 内容 →
-    section headers
-  - **关键**：padding（shoff 要 8 字节对齐）
-  - **验收**：`zig-version.so` 跟 `shim-version.so` 字节完全一致
+- [x] **G.3**：`emit/program.zig` — `emitBytecode() []u8` ✅ 2026-04-18
+  - 顺序：ELF header → program headers → section bytecode → pad8 →
+    section header table
+  - 同步修正 `SectionType.size()` 返回 emit-accurate 字节数（
+    ShStrTab/Data 用 padded 尺寸，其它原值），避免 offset 漂移
+  - 新增 `DataSection.alignedSize()` / `ShStrTabSection.paddedSize()`
+  - PT_LOAD text 段长度 = bytecode + padded rodata（跟 Rust 一致）
+  - **验收**：3 新单测（V0 static / V0 dynamic / V3 各自 ELF magic +
+    e_shoff 精确落在 shnum×64 之前）
 
-- [ ] **G.4**：端到端集成测试
-  - 用 D.9 的输出 → E.3 → G.3，把 hello.o 跑到底产出 `.so`
-  - 跟 shim 产物 `cmp` 对拍
-  - **验收**：**hello.o 字节一致**（MATCH）
+- [x] **G.4**：端到端集成测试 ✅ 2026-04-18 🎉
+  - 新增 `AST.fromByteParse` —— byteparser → AST 的 glue
+  - 新增 `REGISTERED_SYSCALLS` + `nameForHash` —— syscall hash 反查
+  - `Instruction.fromBytes` 在 Call src=0 路径上用 hash 反查回 name
+  - `linkProgram` 从 stub 扶正，接通整条管道
+  - golden fixture：`src/testdata/hello-shim.so`（reference-shim 产出）
+  - **验收**：**hello.o 字节一致**（1192 bytes MATCH reference-shim）
+  - 这是 C1 的决定性里程碑：Zig 管道跟 Rust sbpf-assembler 字节对等
 
 ---
 
@@ -602,10 +610,10 @@ Solana SBPF 特有结构。
 | D — Byteparser | 9 | 9 | ✅ 完成 |
 | E — AST | 4 | 4 | ✅ 完成 |
 | F — ELF 输出层 | 12 | 12 | ✅ 完成 |
-| G — Program emit | 4 | 2 | 进行中 (50%) |
-| H — CLI | 3 | 2 | 进行中（入口/错误处理已完成；主流程验收待 Epic G） |
-| I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **45** | **80%** |
+| G — Program emit | 4 | 4 | ✅ 完成 |
+| H — CLI | 3 | 3 | ✅ 完成（linkProgram 接通） |
+| I — 对拍测试 | 6 | 1 | 进行中（hello.o 已绿；剩 8 个 zignocchio 例） |
+| **总计** | **56** | **49** | **88%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

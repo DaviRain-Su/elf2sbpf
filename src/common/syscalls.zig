@@ -130,3 +130,62 @@ test "murmur3_32 handles all tail lengths (0, 1, 2, 3)" {
     // 8-byte exact (body=2, tail=0) — sol_log_ is here
     _ = murmur3_32("abcdefgh");
 }
+
+/// Registered Solana syscalls. Mirrors Rust sbpf-common::syscalls::
+/// REGISTERED_SYSCALLS. Order matters only for documentation — lookup
+/// is by hash.
+pub const REGISTERED_SYSCALLS = [_][]const u8{
+    "abort",
+    "sol_panic_",
+    "sol_log_",
+    "sol_log_64_",
+    "sol_log_compute_units_",
+    "sol_log_pubkey",
+    "sol_create_program_address",
+    "sol_try_find_program_address",
+    "sol_sha256",
+    "sol_keccak256",
+    "sol_secp256k1_recover",
+    "sol_blake3",
+    "sol_curve_validate_point",
+    "sol_curve_group_op",
+    "sol_get_clock_sysvar",
+    "sol_get_epoch_schedule_sysvar",
+    "sol_get_fees_sysvar",
+    "sol_get_rent_sysvar",
+    "sol_memcpy_",
+    "sol_memmove_",
+    "sol_memcmp_",
+    "sol_memset_",
+    "sol_invoke_signed_c",
+    "sol_invoke_signed_rust",
+    "sol_alloc_free_",
+    "sol_set_return_data",
+    "sol_get_return_data",
+    "sol_log_data",
+    "sol_get_processed_sibling_instruction",
+    "sol_get_stack_height",
+};
+
+/// Reverse-lookup a murmur3-hashed syscall identifier. Returns the
+/// registered name, or `null` if the hash doesn't correspond to any
+/// known syscall.
+///
+/// Used by `Instruction.fromBytes` to resolve `call src=0, imm=hash`
+/// back to the syscall name so buildProgram can produce the correct
+/// V0 dynsym / rel.dyn entries.
+pub fn nameForHash(hash: u32) ?[]const u8 {
+    inline for (REGISTERED_SYSCALLS) |name| {
+        if (murmur3_32(name) == hash) return name;
+    }
+    return null;
+}
+
+test "nameForHash resolves sol_log_" {
+    const hash = murmur3_32("sol_log_");
+    try std.testing.expectEqualStrings("sol_log_", nameForHash(hash).?);
+}
+
+test "nameForHash returns null for unknown hash" {
+    try std.testing.expectEqual(@as(?[]const u8, null), nameForHash(0xdead_beef));
+}

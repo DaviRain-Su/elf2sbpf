@@ -14,6 +14,7 @@ const node_mod = @import("node.zig");
 const instruction_mod = @import("../common/instruction.zig");
 const number_mod = @import("../common/number.zig");
 const syscall_mod = @import("../common/syscalls.zig");
+const byteparser_mod = @import("../parse/byteparser.zig");
 
 pub const ASTNode = node_mod.ASTNode;
 pub const Label = node_mod.Label;
@@ -164,6 +165,75 @@ pub const AST = struct {
             .text_size = 0,
             .rodata_size = 0,
         };
+    }
+
+    /// Construct an AST from a `ByteParseResult` — the glue that Epic E
+    /// deferred to "Epic F/G wiring time". Populates:
+    ///   - `nodes` with one Label per text symbol + one Instruction per
+    ///     decoded instruction + an optional GlobalDecl for the entry
+    ///   - `rodata_nodes` with one ROData per merged rodata entry
+    ///   - `text_size` / `rodata_size`
+    ///
+    /// Ownership: all `[]const u8` slices (label names, rodata names,
+    /// rodata bytes) are borrowed from the `ByteParseResult`. The caller
+    /// must keep the ByteParseResult alive until buildProgram consumes
+    /// the AST.
+    pub fn fromByteParse(
+        allocator: std.mem.Allocator,
+        bpr: *const byteparser_mod.ByteParseResult,
+    ) !AST {
+        var ast = AST.init(allocator);
+        errdefer ast.deinit();
+
+        // Labels first — lets Phase A of buildProgram find them before it
+        // scans instructions. Order among labels themselves doesn't matter.
+        for (bpr.syms.text_labels.items) |tl| {
+            try ast.pushNode(.{
+                .Label = .{
+                    .label = .{ .name = tl.name, .span = .{ .start = 0, .end = 0 } },
+                    .offset = tl.offset,
+                },
+            });
+        }
+
+        // Entry point declaration, if any.
+        if (bpr.syms.entry_label) |entry_name| {
+            try ast.pushNode(.{
+                .GlobalDecl = .{
+                    .global_decl = .{ .entry_label = entry_name, .span = .{ .start = 0, .end = 0 } },
+                },
+            });
+        }
+
+        // Instruction stream.
+        for (bpr.text.instructions.items) |di| {
+            try ast.pushNode(.{
+                .Instruction = .{
+                    .instruction = di.instruction,
+                    .offset = di.offset,
+                },
+            });
+        }
+
+        // Rodata: name + bytes from SymbolScan.pending_rodata, offset
+        // from RodataTable (parallel arrays).
+        for (bpr.syms.pending_rodata.items, 0..) |entry, idx| {
+            try ast.pushRodataNode(.{
+                .ROData = .{
+                    .rodata = .{
+                        .name = entry.name,
+                        .bytes = entry.bytes,
+                        .span = .{ .start = 0, .end = 0 },
+                    },
+                    .offset = bpr.rodata_table.offsets.items[idx],
+                },
+            });
+        }
+
+        ast.setTextSize(bpr.sections.total_text_size);
+        ast.setRodataSize(bpr.rodata_table.total_size);
+
+        return ast;
     }
 
     pub fn deinit(self: *AST) void {

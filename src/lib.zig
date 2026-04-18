@@ -44,10 +44,10 @@ pub const Label = ast_node.Label;
 pub const ROData = ast_node.ROData;
 pub const GlobalDecl = ast_node.GlobalDecl;
 
-const ast_mod = @import("ast/ast.zig");
-pub const AST = ast_mod.AST;
-pub const SbpfArch = ast_mod.SbpfArch;
-pub const ParseResult = ast_mod.ParseResult;
+pub const ast = @import("ast/ast.zig");
+pub const AST = ast.AST;
+pub const SbpfArch = ast.SbpfArch;
+pub const ParseResult = ast.ParseResult;
 
 const emit_header = @import("emit/header.zig");
 pub const ElfHeader = emit_header.ElfHeader;
@@ -131,13 +131,41 @@ pub fn linkProgram(
     allocator: std.mem.Allocator,
     elf_bytes: []const u8,
 ) LinkError![]u8 {
-    _ = allocator;
-    _ = elf_bytes;
-    // Will be implemented over the course of Epics C1-C through C1-G.
-    return LinkError.InvalidElf;
+    const elf_file = ElfFile.parse(elf_bytes) catch return LinkError.InvalidElf;
+
+    var bpr = byteparser.byteParse(allocator, &elf_file) catch |e| switch (e) {
+        error.OutOfMemory => return LinkError.OutOfMemory,
+        else => return LinkError.InvalidElf,
+    };
+    defer bpr.deinit();
+
+    var ast_val = AST.fromByteParse(allocator, &bpr) catch |e| switch (e) {
+        error.OutOfMemory => return LinkError.OutOfMemory,
+    };
+
+    const empty_debug = allocator.alloc(ast.DebugSection, 0) catch
+        return LinkError.OutOfMemory;
+
+    var parse_result = ast_val.buildProgram(.V0, empty_debug) catch |e| switch (e) {
+        error.OutOfMemory => return LinkError.OutOfMemory,
+        error.UndefinedLabel => return LinkError.UndefinedLabel,
+    };
+    ast_val.deinit();
+    defer parse_result.deinit(allocator);
+
+    var program = Program.fromParseResult(allocator, &parse_result) catch |e| switch (e) {
+        error.OutOfMemory => return LinkError.OutOfMemory,
+        error.SyscallSymbolNotFound => return LinkError.CallTargetUnresolvable,
+    };
+    defer program.deinit(allocator);
+
+    return program.emitBytecode(allocator) catch |e| switch (e) {
+        error.OutOfMemory => return LinkError.OutOfMemory,
+        else => return LinkError.InvalidElf,
+    };
 }
 
-test "linkProgram stub returns InvalidElf (scaffold)" {
+test "linkProgram rejects non-ELF bytes with InvalidElf" {
     const allocator = std.testing.allocator;
     const result = linkProgram(allocator, &.{});
     try std.testing.expectError(LinkError.InvalidElf, result);

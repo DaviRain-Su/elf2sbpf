@@ -12,7 +12,8 @@ const Opcode = opcode_mod.Opcode;
 const OperationType = opcode_mod.OperationType;
 const Number = @import("number.zig").Number;
 const Register = @import("register.zig").Register;
-const murmur3_32 = @import("syscalls.zig").murmur3_32;
+const syscall_mod = @import("syscalls.zig");
+const murmur3_32 = syscall_mod.murmur3_32;
 
 /// Errors returned by Instruction byte encode/decode.
 pub const DecodeError = error{
@@ -279,16 +280,26 @@ pub const Instruction = struct {
             .CallImmediate => {
                 // Call: dst and off must be 0. src is 0 (static syscall) or
                 // 1 (pc-relative). The imm means different things:
-                //   src=0: syscall hash (resolved via whitelist → .left(name));
-                //          if no whitelist match, kept as .right(hash)
+                //   src=0: syscall hash. If it matches a registered syscall,
+                //          resolve to .left(name) so buildProgram can reify
+                //          it as a V0 dynsym + .rel.dyn entry. If not, keep
+                //          as .right(hash) — downstream may leave it alone.
                 //   src=1: pc-relative target offset (.right)
                 if (dst_raw != 0 or off_raw != 0) return DecodeError.FieldMustBeZero;
                 if (src_raw != 0 and src_raw != 1) return DecodeError.InvalidSrcRegister;
                 inst.src = Register{ .n = src_raw };
-                // Syscall whitelist lookup deferred to B.9. For now always
-                // return numeric imm; byteparser overwrites with .left via
-                // ELF relocation processing anyway.
-                inst.imm = .{ .right = Number{ .Int = imm_raw } };
+                if (src_raw == 0) {
+                    // Reverse-lookup the syscall hash. Matches Rust
+                    // decode_call_immediate (sbpf-common/src/decode.rs L275).
+                    const hash_u32: u32 = @bitCast(imm_raw);
+                    if (syscall_mod.nameForHash(hash_u32)) |name| {
+                        inst.imm = .{ .left = name };
+                    } else {
+                        inst.imm = .{ .right = Number{ .Int = imm_raw } };
+                    }
+                } else {
+                    inst.imm = .{ .right = Number{ .Int = imm_raw } };
+                }
             },
 
             .CallRegister => {
@@ -643,14 +654,16 @@ test "fromBytes decodes `exit`" {
     try std.testing.expect(inst.imm == null);
 }
 
-test "fromBytes decodes `call 0x207559bd` (sol_log_ hash)" {
-    // 85 00 00 00 bd 59 75 20 — hello.o call to sol_log_
+test "fromBytes decodes `call 0x207559bd` (sol_log_ hash) and resolves to name" {
+    // 85 00 00 00 bd 59 75 20 — hello.o call to sol_log_. The decoder
+    // looks the hash up in REGISTERED_SYSCALLS and stores the resolved
+    // name as .left("sol_log_"). Matches Rust sbpf-common decode.
     const bytes = [_]u8{ 0x85, 0x00, 0x00, 0x00, 0xbd, 0x59, 0x75, 0x20 };
     const inst = try Instruction.fromBytes(&bytes);
     try std.testing.expectEqual(Opcode.Call, inst.opcode);
     try std.testing.expect(inst.dst == null);
     try std.testing.expectEqual(@as(u8, 0), inst.src.?.n);
-    try std.testing.expectEqual(@as(i64, 0x207559bd), inst.imm.?.right.Int);
+    try std.testing.expectEqualStrings("sol_log_", inst.imm.?.left);
 }
 
 test "fromBytes decodes lddw (16 bytes)" {
@@ -806,7 +819,11 @@ const round_trip_cases = [_]RoundTripCase{
         0x00, 0x00, 0, 0, 0x78, 0x56, 0x34, 0x12,
     } },
     .{ .name = "Mov64Imm r2=0x16 (hello.o[3])", .bytes = &[_]u8{ 0xb7, 0x02, 0, 0, 0x16, 0, 0, 0 } },
-    .{ .name = "Call 0x207559bd (hello.o[4])", .bytes = &[_]u8{ 0x85, 0x00, 0, 0, 0xbd, 0x59, 0x75, 0x20 } },
+    // Call 0x207559bd is intentionally NOT round-trippable: decode resolves
+    // the hash to .left("sol_log_"), which the encoder rejects as an
+    // unresolved label. buildProgram runs before encode in the real pipeline
+    // and replaces .left(name) with .right(Int(-1)) for V0 or .right(Int(hash))
+    // for V3. See `fromBytes resolves sol_log_ hash to .left("sol_log_")`.
     .{ .name = "Mov64Imm r0=0 (hello.o[5])", .bytes = &[_]u8{ 0xb7, 0x00, 0, 0, 0, 0, 0, 0 } },
     .{ .name = "Exit (hello.o[6])", .bytes = &[_]u8{ 0x95, 0, 0, 0, 0, 0, 0, 0 } },
     .{ .name = "Mov64Reg r6=r1 (counter.o[0])", .bytes = &[_]u8{ 0xbf, 0x16, 0, 0, 0, 0, 0, 0 } },
@@ -831,12 +848,14 @@ test "round-trip: decode → encode produces identical bytes" {
 
 // --- C1-B.10 integration tests ---
 
-test "integration: syscall hash -> call instruction encode/decode round-trip" {
+test "integration: syscall hash encodes, then decode resolves to .left(name)" {
+    // Build the V3 form: src=0, imm=hash. This is what Zig's BPF compiler
+    // emits for `@call("sol_log_", ...)`. Encode produces the hash bytes.
     const syscall_hash = murmur3_32("sol_log_");
     const inst = Instruction{
         .opcode = .Call,
         .dst = null,
-        .src = .{ .n = 0 }, // syscall call
+        .src = .{ .n = 0 },
         .off = null,
         .imm = .{ .right = .{ .Int = @intCast(syscall_hash) } },
         .span = .{ .start = 0, .end = 8 },
@@ -849,15 +868,13 @@ test "integration: syscall hash -> call instruction encode/decode round-trip" {
     var bytes: [8]u8 = undefined;
     try inst.toBytes(&bytes);
 
+    // Decode: the hash is reverse-looked-up against REGISTERED_SYSCALLS
+    // and `imm` lands as `.left("sol_log_")`. This mirrors Rust's
+    // `decode_call_immediate` (sbpf-common/src/decode.rs L257).
     const decoded = try Instruction.fromBytes(&bytes);
     try std.testing.expectEqual(Opcode.Call, decoded.opcode);
-    try std.testing.expect(decoded.src != null);
     try std.testing.expectEqual(@as(u8, 0), decoded.src.?.n);
-    try std.testing.expect(decoded.imm != null);
-    try std.testing.expectEqual(
-        @as(i64, @intCast(syscall_hash)),
-        decoded.imm.?.right.Int,
-    );
+    try std.testing.expectEqualStrings("sol_log_", decoded.imm.?.left);
 }
 
 test "integration: callx keeps src register and is not syscall" {

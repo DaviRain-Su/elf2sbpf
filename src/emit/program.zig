@@ -175,23 +175,24 @@ pub const Program = struct {
         // --- section list: [Null, Code, (Data?), ...]
         try self.appendSection(allocator, .{ .null_ = section_mod.NullSection.init() });
 
-        try self.section_names.append(allocator, ".text");
-        if (has_rodata) try self.section_names.append(allocator, ".rodata");
-
         if (arch == .V3 and has_rodata) {
             // V3 with rodata: rodata FIRST (vaddr 0), then code (vaddr 1<<32).
             var data_section = section_mod.DataSection{
                 .nodes = pr.data_section.nodes.items,
                 .size = rodata_size,
             };
+            data_section.setNameOffset(@as(u32, @intCast(1 + cumulativeNameLen(self.section_names.items))));
+            try self.section_names.append(allocator, ".rodata");
             data_section.setOffset(current_offset);
-            current_offset += data_section.size;
+            current_offset += data_section.alignedSize();
             try self.appendSection(allocator, .{ .data = data_section });
 
             var code_section = section_mod.CodeSection{
                 .nodes = pr.code_section.nodes.items,
                 .size = bytecode_size,
             };
+            code_section.setNameOffset(@as(u32, @intCast(1 + cumulativeNameLen(self.section_names.items))));
+            try self.section_names.append(allocator, ".text");
             code_section.setOffset(current_offset);
             current_offset += code_section.size;
             try self.appendSection(allocator, .{ .code = code_section });
@@ -200,6 +201,8 @@ pub const Program = struct {
                 .nodes = pr.code_section.nodes.items,
                 .size = bytecode_size,
             };
+            code_section.setNameOffset(@as(u32, @intCast(1 + cumulativeNameLen(self.section_names.items))));
+            try self.section_names.append(allocator, ".text");
             code_section.setOffset(current_offset);
             current_offset += code_section.size;
             try self.appendSection(allocator, .{ .code = code_section });
@@ -209,8 +212,10 @@ pub const Program = struct {
                     .nodes = pr.data_section.nodes.items,
                     .size = rodata_size,
                 };
+                data_section.setNameOffset(@as(u32, @intCast(1 + cumulativeNameLen(self.section_names.items))));
+                try self.section_names.append(allocator, ".rodata");
                 data_section.setOffset(current_offset);
-                current_offset += data_section.size;
+                current_offset += data_section.alignedSize();
                 try self.appendSection(allocator, .{ .data = data_section });
             }
         }
@@ -271,7 +276,7 @@ pub const Program = struct {
             .section_names = self.section_names.items,
         };
         shstrtab.setOffset(current_offset.*);
-        current_offset.* += shstrtab.size();
+        current_offset.* += shstrtab.paddedSize();
         try self.appendSection(allocator, .{ .shstrtab = shstrtab });
 
         // Program headers — V3 uses fixed virtual addresses.
@@ -328,10 +333,22 @@ pub const Program = struct {
             });
             dyn_str_offset += @as(u32, @intCast(e.name.len + 1));
         }
-        // call targets (syscalls)
+        // Call targets (syscalls): one dynsym entry per unique name, sorted
+        // lexicographically to match the reference-shim / Rust output.
+        var syscall_names: std.ArrayList([]const u8) = .empty;
+        defer syscall_names.deinit(allocator);
         for (pr.dynamic_symbols.entries.items) |e| {
             if (e.is_entry_point) continue;
-            try self.symbol_names_storage.append(allocator, e.name);
+            if (findSymbolIndex(syscall_names.items, e.name) != null) continue;
+            try syscall_names.append(allocator, e.name);
+        }
+        std.mem.sort([]const u8, syscall_names.items, {}, struct {
+            fn lt(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lt);
+        for (syscall_names.items) |name| {
+            try self.symbol_names_storage.append(allocator, name);
             try self.dyn_syms_storage.append(allocator, .{
                 .name = dyn_str_offset,
                 .info = section_mod.STB_GLOBAL_STT_NOTYPE,
@@ -340,7 +357,7 @@ pub const Program = struct {
                 .value = 0,
                 .size = 0,
             });
-            dyn_str_offset += @as(u32, @intCast(e.name.len + 1));
+            dyn_str_offset += @as(u32, @intCast(name.len + 1));
         }
 
         // --- build rel_dyns from ParseResult.relocation_data.
@@ -367,6 +384,15 @@ pub const Program = struct {
                 },
             }
         }
+
+        // Match Rust output: .rel.dyn entries are serialized in ascending
+        // offset order.
+        std.mem.sort(section_mod.RelDynEntry, self.rel_dyns_storage.items, {}, struct {
+            fn lt(_: void, a: section_mod.RelDynEntry, b: section_mod.RelDynEntry) bool {
+                if (a.offset != b.offset) return a.offset < b.offset;
+                return a.rel_type < b.rel_type;
+            }
+        }.lt);
 
         // --- allocate name_offsets in the order: .dynamic, .dynsym,
         // .dynstr, .rel.dyn. Each name_offset = leading-null (1) +
@@ -435,11 +461,15 @@ pub const Program = struct {
             .section_names = self.section_names.items,
         };
         shstrtab.setOffset(current_offset.*);
-        current_offset.* += shstrtab.size();
+        current_offset.* += shstrtab.paddedSize();
 
         // --- program headers: text PT_LOAD, (dynsym+dynstr+reldyn) PT_LOAD,
         // dynamic PT_DYNAMIC.
-        const text_size = bytecode_size + rodata_size;
+        // Rodata contributes its PADDED size to the PT_LOAD (matches Rust
+        // DataSection::size() which returns `(size + 7) & ~7`). The section
+        // header itself still records the logical unpadded size.
+        const padded_rodata_size = (rodata_size + 7) & ~@as(u64, 7);
+        const text_size = bytecode_size + padded_rodata_size;
         try self.appendProgramHeader(
             allocator,
             ProgramHeader.newLoad(text_offset, text_size, true, .V0),
@@ -466,6 +496,59 @@ pub const Program = struct {
         try self.appendSection(allocator, .{ .shstrtab = shstrtab });
     }
 
+    // -----------------------------------------------------------------------
+    // emitBytecode — serialize the assembled Program to the output .so bytes.
+    //
+    // Layout (mirrors Rust program.rs::emit_bytecode at L392-416):
+    //   1. ELF header (64 bytes)
+    //   2. Program headers (phnum × 56)
+    //   3. Section bytecode, concatenated in push order
+    //   4. Padding to 8-byte boundary (lands at e_shoff)
+    //   5. Section headers (shnum × 64)
+    //
+    // Caller owns the returned slice; free with the same allocator.
+    // -----------------------------------------------------------------------
+
+    pub fn emitBytecode(self: *const Program, allocator: std.mem.Allocator) ![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+
+        // 1. ELF header.
+        var ehdr: [header_mod.ELF64_HEADER_SIZE]u8 = undefined;
+        self.elf_header.bytecode(&ehdr);
+        try out.appendSlice(allocator, &ehdr);
+
+        // 2. Program headers.
+        for (self.program_headers.items) |ph| {
+            var phbytes: [header_mod.PROGRAM_HEADER_SIZE]u8 = undefined;
+            ph.bytecode(&phbytes);
+            try out.appendSlice(allocator, &phbytes);
+        }
+
+        // 3. Section bytecode.
+        for (self.sections.items) |s| {
+            const bytes = try s.bytecode(allocator);
+            defer allocator.free(bytes);
+            try out.appendSlice(allocator, bytes);
+        }
+
+        // 4. Pad to section-header boundary. We track the current byte
+        // position ourselves and pad to match e_shoff (which was set in
+        // fromParseResult to `last_section_end + padTo8`).
+        while (out.items.len < self.elf_header.e_shoff) {
+            try out.append(allocator, 0);
+        }
+
+        // 5. Section headers (64 bytes each).
+        for (self.sections.items) |s| {
+            var shbytes: [header_mod.SECTION_HEADER_SIZE]u8 = undefined;
+            s.sectionHeaderBytecode(&shbytes);
+            try out.appendSlice(allocator, &shbytes);
+        }
+
+        return out.toOwnedSlice(allocator);
+    }
+
     fn layoutV0Static(
         self: *Program,
         allocator: std.mem.Allocator,
@@ -483,7 +566,7 @@ pub const Program = struct {
             .section_names = self.section_names.items,
         };
         shstrtab.setOffset(current_offset.*);
-        current_offset.* += shstrtab.size();
+        current_offset.* += shstrtab.paddedSize();
         try self.appendSection(allocator, .{ .shstrtab = shstrtab });
     }
 };
@@ -722,4 +805,108 @@ test "fromParseResult: V0 dynamic with syscall produces full section list + 3 PH
     // Dynamic section is back-linked to .dynstr (section index 4 in final
     // layout: Null/Code/Dynamic/DynSym/DynStr/RelDyn/ShStrTab).
     try testing.expectEqual(@as(u32, 4), dyn.link);
+}
+
+test "emitBytecode: V0 static starts with \\x7fELF and ends at e_shoff + shnum*64" {
+    var code_nodes: std.ArrayList(ast_mod.ASTNode) = .empty;
+    defer code_nodes.deinit(testing.allocator);
+    var data_nodes: std.ArrayList(ast_mod.ASTNode) = .empty;
+    defer data_nodes.deinit(testing.allocator);
+
+    var pr = ParseResult{
+        .code_section = ast_mod.CodeSection.new(code_nodes, 0),
+        .data_section = ast_mod.DataSection.new(data_nodes, 0),
+        .dynamic_symbols = ast_mod.DynamicSymbolMap.init(testing.allocator),
+        .relocation_data = ast_mod.RelDynMap.init(testing.allocator),
+        .prog_is_static = true,
+        .arch = .V0,
+        .debug_sections = &.{},
+    };
+    defer pr.dynamic_symbols.deinit(testing.allocator);
+    defer pr.relocation_data.deinit(testing.allocator);
+
+    var prog = try Program.fromParseResult(testing.allocator, &pr);
+    defer prog.deinit(testing.allocator);
+
+    const bytes = try prog.emitBytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    // ELF magic.
+    try testing.expectEqualSlices(u8, "\x7fELF", bytes[0..4]);
+    // Reads back the sh_num and sh_off recorded in the header.
+    const e_shoff = std.mem.readInt(u64, bytes[40..48], .little);
+    const e_shnum = std.mem.readInt(u16, bytes[60..62], .little);
+    try testing.expectEqual(@as(usize, e_shoff + @as(u64, e_shnum) * 64), bytes.len);
+    // shnum == 3 (Null + Code + ShStrTab).
+    try testing.expectEqual(@as(u16, 3), e_shnum);
+}
+
+test "emitBytecode: V0 dynamic embeds 3 program headers and full section table" {
+    var code_nodes: std.ArrayList(ast_mod.ASTNode) = .empty;
+    defer code_nodes.deinit(testing.allocator);
+    var data_nodes: std.ArrayList(ast_mod.ASTNode) = .empty;
+    defer data_nodes.deinit(testing.allocator);
+
+    var pr = ParseResult{
+        .code_section = ast_mod.CodeSection.new(code_nodes, 0x18),
+        .data_section = ast_mod.DataSection.new(data_nodes, 0),
+        .dynamic_symbols = ast_mod.DynamicSymbolMap.init(testing.allocator),
+        .relocation_data = ast_mod.RelDynMap.init(testing.allocator),
+        .prog_is_static = false,
+        .arch = .V0,
+        .debug_sections = &.{},
+    };
+    defer pr.dynamic_symbols.deinit(testing.allocator);
+    defer pr.relocation_data.deinit(testing.allocator);
+
+    try pr.dynamic_symbols.addEntryPoint(testing.allocator, "entrypoint", 0);
+    try pr.dynamic_symbols.addCallTarget(testing.allocator, "sol_log_", 0);
+    try pr.relocation_data.addRelDyn(testing.allocator, 0x10, .RSbfSyscall, "sol_log_");
+
+    var prog = try Program.fromParseResult(testing.allocator, &pr);
+    defer prog.deinit(testing.allocator);
+
+    const bytes = try prog.emitBytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqualSlices(u8, "\x7fELF", bytes[0..4]);
+    const e_phnum = std.mem.readInt(u16, bytes[56..58], .little);
+    try testing.expectEqual(@as(u16, 3), e_phnum);
+    const e_shnum = std.mem.readInt(u16, bytes[60..62], .little);
+    try testing.expectEqual(@as(u16, 7), e_shnum);
+
+    // Output must be at least ELF header (64) + 3×PH (168) + 7×SH (448)
+    // = 680 bytes, plus whatever the section contents take.
+    try testing.expect(bytes.len >= 680);
+}
+
+test "emitBytecode: ends at exactly (e_shoff + shnum * 64)" {
+    // Any valid Program should satisfy this invariant — no trailing bytes
+    // after the section header table.
+    var code_nodes: std.ArrayList(ast_mod.ASTNode) = .empty;
+    defer code_nodes.deinit(testing.allocator);
+    var data_nodes: std.ArrayList(ast_mod.ASTNode) = .empty;
+    defer data_nodes.deinit(testing.allocator);
+
+    var pr = ParseResult{
+        .code_section = ast_mod.CodeSection.new(code_nodes, 8),
+        .data_section = ast_mod.DataSection.new(data_nodes, 0),
+        .dynamic_symbols = ast_mod.DynamicSymbolMap.init(testing.allocator),
+        .relocation_data = ast_mod.RelDynMap.init(testing.allocator),
+        .prog_is_static = true,
+        .arch = .V3,
+        .debug_sections = &.{},
+    };
+    defer pr.dynamic_symbols.deinit(testing.allocator);
+    defer pr.relocation_data.deinit(testing.allocator);
+
+    var prog = try Program.fromParseResult(testing.allocator, &pr);
+    defer prog.deinit(testing.allocator);
+
+    const bytes = try prog.emitBytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    const e_shoff = std.mem.readInt(u64, bytes[40..48], .little);
+    const e_shnum = std.mem.readInt(u16, bytes[60..62], .little);
+    try testing.expectEqual(@as(usize, e_shoff + @as(u64, e_shnum) * 64), bytes.len);
 }

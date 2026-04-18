@@ -11,6 +11,7 @@ fixtures/validate-all/
 # Testdata files are tracked — they're small, deterministic, committed as
 # pre-built fixtures so tests work without a Zig rebuild pipeline.
 !src/testdata/*.o
+!src/testdata/*.so
 
 # Rust reference shim
 reference-shim/target/
