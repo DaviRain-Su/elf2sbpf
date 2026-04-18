@@ -801,6 +801,154 @@ pub fn decodeTextSections(
     };
 }
 
+/// Errors from the relocation-rewrite pass (D.7).
+pub const RewriteError = error{
+    /// A lddw relocation's (section, addend) key doesn't match any entry
+    /// in rodata_table. Means the compiler produced a relocation into
+    /// a non-rodata section (a bug we can't recover from).
+    LddwTargetOutsideRodata,
+    /// A non-STT_SECTION call target symbol had an empty name.
+    CallTargetUnresolvable,
+    OutOfMemory,
+};
+
+/// Find the `DecodedInstruction` in `text_scan` whose absolute offset
+/// matches `target`. Returns a mutable pointer so callers can rewrite
+/// the instruction in place. Null if no match (shouldn't happen for
+/// well-formed input — every relocation offset must correspond to a
+/// decoded instruction).
+fn findInstructionAtOffset(text_scan: *TextScan, target: u64) ?*DecodedInstruction {
+    // Linear scan is fine: hello.o has 7 items; even counter.o has ~180.
+    // If this ever shows up in a profile, switch to binary search.
+    for (text_scan.instructions.items) |*inst| {
+        if (inst.offset == target) return inst;
+    }
+    return null;
+}
+
+/// Pass D.7: walk every text relocation and rewrite the targeted
+/// instruction's `imm` field from a numeric addend to a symbolic
+/// `Either.left(name)` label. Later passes (Epic E's AST.buildProgram)
+/// will resolve those names to final offsets.
+///
+/// Three cases, matching Rust byteparser.rs L216-280:
+///
+/// 1. **lddw + rodata target** — look up (target_section, addend)
+///    in rodata_table. If found, replace imm with the entry's name.
+///    If not found, return LddwTargetOutsideRodata.
+///
+/// 2. **call + STT_SECTION target** — rewrite imm only if a named
+///    symbol exists at (target_section, current_imm). If no matching
+///    named symbol, leave the numeric imm unchanged (it's a direct
+///    pc-relative offset the emitter handles unchanged).
+///
+/// 3. **call + non-STT_SECTION target** — take the symbol's name
+///    directly; replace imm with it. Empty-name triggers
+///    CallTargetUnresolvable.
+///
+/// The `owned_call_names` list holds any strings we allocate for case 3
+/// (Rust uses `.to_owned()`; Zig needs explicit ownership). Caller
+/// frees these via `TextScan.deinit` once the rewritten names are
+/// replaced with final offsets.
+pub fn rewriteRelocations(
+    file: *const elf_mod.ElfFile,
+    sections: *const SectionScan,
+    rodata_table: *const RodataTable,
+    text_scan: *TextScan,
+    owned_names: *std.ArrayList([]const u8),
+) RewriteError!void {
+    var sec_it = file.iterSections();
+    while (sec_it.next() catch null) |rel_sec| {
+        const kind = rel_sec.kind();
+        if (kind != std.elf.SHT_REL and kind != std.elf.SHT_RELA) continue;
+
+        // sh_info tells us which section this relocation table applies
+        // to. Only text sections matter here.
+        const info_raw = rel_sec.header.sh_info;
+        if (info_raw > std.math.maxInt(u16)) continue;
+        const target_sec_idx: u16 = @intCast(info_raw);
+        const text_base = sections.textBaseByIndex(target_sec_idx) orelse continue;
+
+        var rel_it = file.iterRelocations(rel_sec) catch continue;
+        while (rel_it.next()) |r| {
+            // Resolve target symbol.
+            var sym_iter = file.iterSymbols(.symtab) catch continue;
+            var target_sym: ?symbol_mod.Symbol = null;
+            var i: u32 = 0;
+            while (sym_iter.next() catch null) |s| : (i += 1) {
+                if (i == r.symbol_index) {
+                    target_sym = s;
+                    break;
+                }
+            }
+            const sym = target_sym orelse continue;
+
+            // Find the instruction being relocated, in merged coordinates.
+            const abs_offset = text_base + r.offset;
+            const dec = findInstructionAtOffset(text_scan, abs_offset) orelse continue;
+            var inst = &dec.instruction;
+
+            switch (inst.opcode) {
+                .Lddw => {
+                    // addend lives in the instruction's imm field (set at D.6
+                    // decode time from the raw bytes).
+                    const addend: u64 = blk: {
+                        if (inst.imm) |imm| switch (imm) {
+                            .right => |n| break :blk @bitCast(n.toI64()),
+                            else => break :blk 0,
+                        };
+                        break :blk 0;
+                    };
+                    const sym_sec = sym.sectionIndex() orelse continue;
+                    const key: RodataKey = .{ .section_index = sym_sec, .address = addend };
+                    const slot = rodata_table.find(key) orelse {
+                        return RewriteError.LddwTargetOutsideRodata;
+                    };
+                    inst.imm = .{ .left = rodata_table.nameAt(slot) };
+                },
+                .Call => {
+                    if (sym.kind() == .Section) {
+                        // STT_SECTION: look for a named symbol at
+                        // (target_section, current_imm_as_u64). If found,
+                        // swap imm for its name; otherwise leave alone.
+                        const current_addend: u64 = blk: {
+                            if (inst.imm) |imm| switch (imm) {
+                                .right => |n| break :blk @bitCast(n.toI64()),
+                                else => break :blk 0,
+                            };
+                            break :blk 0;
+                        };
+                        const sym_sec = sym.sectionIndex() orelse continue;
+
+                        var named_iter = file.iterSymbols(.symtab) catch continue;
+                        var found: ?[]const u8 = null;
+                        while (named_iter.next() catch null) |s| {
+                            const s_sec = s.sectionIndex() orelse continue;
+                            if (s_sec == sym_sec and s.address() == current_addend and s.name.len > 0) {
+                                found = s.name;
+                                break;
+                            }
+                        }
+                        if (found) |name| {
+                            inst.imm = .{ .left = name };
+                        }
+                        // No named match: imm stays as numeric; emitter
+                        // treats it as direct pc-relative.
+                    } else {
+                        if (sym.name.len == 0) return RewriteError.CallTargetUnresolvable;
+                        // Name lives in ELF strtab slice — already borrowed,
+                        // no copy needed. But track for future ownership
+                        // symmetry if we ever need to outlive the ELF buffer.
+                        _ = owned_names; // currently unused
+                        inst.imm = .{ .left = sym.name };
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+}
+
 // --- tests ---
 
 const testing = std.testing;
@@ -1457,6 +1605,46 @@ test "decodeTextSections: hello.o yields 7 instructions with correct offsets" {
     const ins6 = text_scan.instructions.items[6];
     try testing.expectEqual(@as(u64, 56), ins6.offset);
     try testing.expectEqual(opcode_mod.Opcode.Exit, ins6.instruction.opcode);
+}
+
+test "rewriteRelocations: hello.o lddw gets rodata label" {
+    const hello_bytes = @embedFile("../testdata/hello.o");
+    const file = try elf_mod.ElfFile.parse(hello_bytes);
+
+    var sections = try scanSections(testing.allocator, &file);
+    defer sections.deinit();
+    var syms = try scanSymbols(testing.allocator, &file, &sections);
+    defer syms.deinit();
+    var targets = try collectLddwTargets(testing.allocator, &file, &sections);
+    defer targets.deinit();
+    try gapFillRodata(testing.allocator, &sections, &targets, &syms);
+    var table = try buildRodataTable(testing.allocator, &syms);
+    defer table.deinit();
+    var text_scan = try decodeTextSections(testing.allocator, &sections);
+    defer text_scan.deinit();
+
+    var owned_names: std.ArrayList([]const u8) = .empty;
+    defer owned_names.deinit(testing.allocator);
+
+    try rewriteRelocations(
+        &file,
+        &sections,
+        &table,
+        &text_scan,
+        &owned_names,
+    );
+
+    // The lddw at offset 16 should now carry a .left(name) imm pointing
+    // at the rodata label.
+    const lddw = text_scan.instructions.items[2];
+    try testing.expectEqual(opcode_mod.Opcode.Lddw, lddw.instruction.opcode);
+    const imm = lddw.instruction.imm orelse return error.TestExpectedImm;
+    switch (imm) {
+        .left => |name| {
+            try testing.expect(std.mem.startsWith(u8, name, ".rodata.__anon_"));
+        },
+        .right => return error.TestExpectedLeftVariant,
+    }
 }
 
 test "decodeTextSections: empty text section yields empty result" {

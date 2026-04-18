@@ -1429,6 +1429,66 @@ Opcode 作为 internal 依赖没再 re-export。保持当前设计（模块只 p
 复杂度在：按 relocation offset 找 TextScan 里的那条 Instruction，
 然后改它。
 
+---
+
+## C1-D.7 — relocation 重写
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 做的事
+
+1. `RewriteError`：LddwTargetOutsideRodata / CallTargetUnresolvable / OOM
+2. `findInstructionAtOffset(text_scan, offset) → ?*DecodedInstruction`
+   - 线性扫（counter.o 最大 ~180 entries，可接受）
+3. `rewriteRelocations(file, sections, rodata_table, text_scan, owned_names)` 主入口
+   - 遍历 SHT_REL/SHT_RELA，按 sh_info 找 text target
+   - 对每 reloc entry：
+     - 找 target symbol
+     - 按 text_base + r.offset 找 DecodedInstruction
+     - 按 opcode 分 3 case：
+       - **Lddw**：取 imm 当前 addend，rodata_table 查 → `.left(name)`
+       - **Call STT_SECTION**：反查命名符号 (sym_sec, current_imm) → `.left` 或保留
+       - **Call 非 STT_SECTION**：直接 `.left(sym.name)`
+     - 其他 opcode 忽略
+
+### 设计选择：owned_names 参数
+
+Rust 版是 `.to_owned()` 把符号名拷贝。Zig 里这些 name 都是从 ELF
+strtab 借用，生命周期跟 `file.bytes` 绑定——足够 OK，只要 ELF 不释放。
+`owned_names` 参数当前没实际用途，但签名里保留——未来若 D.7 之后
+还有步骤要把名字改掉或复制，调用方可以 push 进来统一 deinit。
+
+### 端到端 smoke test
+
+测试集成了 D.1→D.7 完整 pipeline：
+```
+scanSections → scanSymbols → collectLddwTargets → gapFillRodata
+  → buildRodataTable → decodeTextSections → rewriteRelocations
+```
+对 hello.o：lddw @ offset 16 的 imm 从原 `.right(Number.Int(0))`
+被改写成 `.left(".rodata.__anon_...")`——**byteparser 核心职责 100%
+达成**。
+
+### 验收
+
+- [x] 1 端到端 D.1→D.7 测试
+- [x] `zig build test --summary all`：**105/105** 全绿
+- [x] hello.o 的 lddw imm 成功重写成 rodata label
+
+### Epic D 进度
+
+- D.1-D.7 ✅
+- D.8 debug section 保留（下一步，简单）
+- D.9 byteParse 主入口（把前 8 步包成一个 public 函数）
+
+### 下一任务
+
+**D.8** — 遍历所有 `.debug_*` section，原样保留到 `DebugSection` 列表。
+这是给 Epic F 输出层（`.debug_*` 直接复制到输出 .so）用的。实现简单：
+扫 section 名字过滤，存起来。
+
+
 
 
 

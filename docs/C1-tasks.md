@@ -302,11 +302,15 @@ test` 跑空测试。
   - `DecodeTextError`：InstructionDecodeFailed / TextSectionMisaligned / OutOfMemory
   - **验收**：2 测试——hello.o 7 条指令 offsets 0/8/16/32/40/48/56 全对（lddw @ 16 占用 2 slots）；空 text 空结果
 
-- [ ] **D.7**：Relocation 重写
-  - lddw：rodata_table 查找 → `node.imm = Either.left(ro_label)`
-  - call：若目标是 STT_SECTION，扫符号找具名目标；否则直接用符号名
-    - 若找不到（无具名目标），保持原 imm（是个 PC-relative offset）
-  - **验收**：hello.o 的 `call sol_log_` relocation 正确重写
+- [x] **D.7**：Relocation 重写 ✅ 2026-04-18
+  - `rewriteRelocations(file, sections, rodata_table, text_scan, owned_names)`
+  - 3 种 case 全实现：
+    - lddw + rodata target → `imm = .left(rodata_name)`，查不到返回 `LddwTargetOutsideRodata`
+    - call + STT_SECTION → 按当前 imm 反查具名符号；查不到保持数字 imm
+    - call + 非 STT_SECTION → `imm = .left(sym.name)`，空名 → `CallTargetUnresolvable`
+  - `RewriteError`：LddwTargetOutsideRodata / CallTargetUnresolvable / OOM
+  - `findInstructionAtOffset` helper：按绝对 offset 定位 DecodedInstruction
+  - **验收**：hello.o 端到端 D.1→D.7 pipeline 跑通，lddw @ offset 16 被重写为 `.left(".rodata.__anon_...")`
 
 - [ ] **D.8**：debug section 暂存（最小实现）
   - 对 `.debug_*` section，保留原始字节到 `debug_sections`
@@ -556,13 +560,13 @@ Solana SBPF 特有结构。
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
-| D — Byteparser | 9 | 6 | 进行中 (67%) |
+| D — Byteparser | 9 | 7 | 进行中 (78%) |
 | E — AST | 4 | 0 | 未开始 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **22** | **39%** |
+| **总计** | **56** | **23** | **41%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
