@@ -2593,6 +2593,95 @@ loop 直接 cmp。CI 跑 `zig build test` 就覆盖了这个 gate。
 在 zignocchio 侧演示用 `elf2sbpf` 替代 `sbpf-linker`。
 这是 downstream 集成示例，不是 C1 阻塞项。
 
+---
+
+## I.6 — zignocchio 集成草稿 ✅
+
+**日期**：2026-04-18
+**commit**：待推送
+**耗时**：约 30min（含端到端实测）
+
+### 做了什么
+
+新增 `docs/integrations/zignocchio-build.zig` —— 一份完整的
+drop-in `build.zig`，zignocchio 团队可以直接拷到仓根试用。
+
+### 三个新 `-D` 选项
+
+- `-Dexample=<name>`：同旧版，选择 example（默认 counter）
+- `-Dlinker=elf2sbpf|sbpf-linker`：后端选择（默认 elf2sbpf，
+  sbpf-linker 作 legacy 回退保底）
+- `-Delf2sbpf-bin=<path>`：显式指定 elf2sbpf 二进制位置（默认查
+  PATH）
+
+### 新后端流程
+
+```
+zig build-lib -femit-llvm-bc    ← Step 1：Zig 前端 → LLVM bitcode
+        ↓
+zig cc -c ... -mllvm -bpf-stack-size=4096   ← Step 2：LLVM → BPF ELF
+        ↓
+elf2sbpf in.o out.so            ← Step 3：纯 Zig，零外部依赖
+```
+
+对比旧 `sbpf-linker` 流程：
+- 旧：2 步（bitcode → sbpf-linker）；需要 cargo + Rust + libLLVM.so.20
+- 新：3 步；**零外部依赖**（zig cc bridge 把 LLVM 隐藏在 Zig
+  tarball 里）
+
+### 实测端到端
+
+把草稿拷到 `/Users/davirian/dev/active/zignocchio/build.zig`，
+跑 `zig build -Dexample=hello`：
+
+```
+zig-out/lib/hello.so  (1192 bytes)
+cmp zig-out/lib/hello.so elf2sbpf/src/testdata/hello.shim.so
+→ MATCH
+```
+
+**字节完全一致**——从 zignocchio 源码经 elf2sbpf 管道出来的 .so
+跟 reference-shim 的 golden 完全相同。这闭合了整个验收链：
+
+```
+Zig 源码 ──→ [elf2sbpf 管道] ──→ .so  ≡  reference-shim 的 .so
+```
+
+### legacy 回退保留
+
+`-Dlinker=sbpf-linker` 保留了原来的 build graph（包括
+LD_LIBRARY_PATH 的 libLLVM 修复 hack）。上游可以在迁移期间
+用 `-Dlinker=sbpf-linker` 回退对比，CI 全绿后再删 legacy 分支。
+
+### 验收
+
+- 草稿文件 `docs/integrations/zignocchio-build.zig` 存在
+- 拷到 zignocchio 仓根后 `zig build --help` 正确显示 3 个 -D 选项
+- `zig build -Dexample=hello` 产物跟 golden **字节一致**
+
+### C1 最终状态
+
+| Epic | 状态 |
+|------|------|
+| A — 项目骨架 | ✅ 3/3 |
+| B — 通用数据类型 | ✅ 9/10（B.4 推迟，B.10 被 B.9 实际覆盖） |
+| C — ELF 读取 | ✅ 5/5 |
+| D — Byteparser | ✅ 9/9 |
+| E — AST | ✅ 4/4 |
+| F — ELF 输出层 | ✅ 12/12 |
+| G — Program emit | ✅ 4/4 |
+| H — CLI | ✅ 3/3 |
+| I — 对拍测试 | ✅ 6/6 |
+| **总计** | **54/56（96%）** |
+
+剩下的 2 个 B 任务是主动推迟或被合并覆盖，**C1 MVP 的工作已
+全部完成**。核心交付物：
+
+- ✅ 362/362 tests 全绿
+- ✅ 9/9 zignocchio example byte-identical to reference-shim
+- ✅ GitHub Actions CI green on ubuntu + macOS
+- ✅ zignocchio 集成草稿就位，实测闭环
+
 
 
 

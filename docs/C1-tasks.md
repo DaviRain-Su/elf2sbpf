@@ -603,9 +603,15 @@ Solana SBPF 特有结构。
   - 更新 scope 里每个条目的状态
   - **验收**：README 与当前实现状态一致
 
-- [ ] **I.6**（可选）：zignocchio `build.zig` 草稿
-  - 在 elf2sbpf 仓库里放一份修改后的 `build.zig` 作为 PR 预览
-  - **验收**：用 elf2sbpf 替代 sbpf-linker 调用，能跑通
+- [x] **I.6**（可选）：zignocchio `build.zig` 草稿 ✅ 2026-04-18
+  - `docs/integrations/zignocchio-build.zig`：drop-in 替换 zignocchio
+    当前 build.zig
+  - 支持 `-Dlinker=elf2sbpf`（默认）/`-Dlinker=sbpf-linker`（legacy
+    回退）+ `-Delf2sbpf-bin=<path>`
+  - 流程：`zig build-lib -femit-llvm-bc` → `zig cc -mllvm
+    -bpf-stack-size=4096 -c ... -o ....o` → `elf2sbpf ....o ....so`
+  - **验收**：把草稿拷到 zignocchio 仓根跑 `zig build -Dexample=hello`
+    生成的 hello.so **跟 elf2sbpf 的 hello.shim.so golden 字节一致**
 
 ---
 
@@ -625,8 +631,8 @@ Solana SBPF 特有结构。
 | F — ELF 输出层 | 12 | 12 | ✅ 完成 |
 | G — Program emit | 4 | 4 | ✅ 完成 |
 | H — CLI | 3 | 3 | ✅ 完成 |
-| I — 对拍测试 | 6 | 5 | 进行中（I.6 zignocchio build.zig 草稿是可选） |
-| **总计** | **56** | **53** | **95%** |
+| I — 对拍测试 | 6 | 6 | ✅ 完成 |
+| **总计** | **56** | **54** | **96%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
