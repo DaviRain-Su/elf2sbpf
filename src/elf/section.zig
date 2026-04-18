@@ -86,8 +86,13 @@ pub fn buildSection(file: *const ElfFile, idx: u16) SectionError!Section {
         if (hdr.sh_type == elf.SHT_NULL or hdr.sh_type == elf.SHT_NOBITS) {
             break :blk &.{};
         }
-        if (off + sz > file.bytes.len) return SectionError.DataOutOfRange;
-        break :blk file.bytes[off .. off + sz];
+        // Overflow-safe bounds: compute (bytes.len - off) only after
+        // confirming off <= bytes.len, so `off + sz` never wraps even
+        // when a malformed ELF sets sh_offset close to u64.max.
+        if (off > file.bytes.len or sz > file.bytes.len - off) {
+            return SectionError.DataOutOfRange;
+        }
+        break :blk file.bytes[off..][0..sz];
     };
 
     return Section{

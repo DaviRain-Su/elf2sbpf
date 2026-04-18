@@ -151,7 +151,9 @@ fn makeIterFromTableHeader(file: *const ElfFile, sh: elf.Elf64_Shdr) SymbolError
     const sz: usize = @intCast(sh.sh_size);
     const off: usize = @intCast(sh.sh_offset);
     if (ent != @sizeOf(elf.Elf64_Sym)) return SymbolError.CorruptSymbolTable;
-    if (off + sz > file.bytes.len) return SymbolError.CorruptSymbolTable;
+    if (off > file.bytes.len or sz > file.bytes.len - off) {
+        return SymbolError.CorruptSymbolTable;
+    }
     if (sz % ent != 0) return SymbolError.CorruptSymbolTable;
 
     const count: u32 = @intCast(sz / ent);
@@ -165,8 +167,10 @@ fn makeIterFromTableHeader(file: *const ElfFile, sh: elf.Elf64_Shdr) SymbolError
     if (strtab_hdr.sh_type != elf.SHT_STRTAB) return SymbolError.BadStringTable;
     const strtab_off: usize = @intCast(strtab_hdr.sh_offset);
     const strtab_sz: usize = @intCast(strtab_hdr.sh_size);
-    if (strtab_off + strtab_sz > file.bytes.len) return SymbolError.BadStringTable;
-    const strtab = file.bytes[strtab_off .. strtab_off + strtab_sz];
+    if (strtab_off > file.bytes.len or strtab_sz > file.bytes.len - strtab_off) {
+        return SymbolError.BadStringTable;
+    }
+    const strtab = file.bytes[strtab_off..][0..strtab_sz];
 
     return SymbolIter{
         .file = file,

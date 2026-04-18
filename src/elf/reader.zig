@@ -83,7 +83,11 @@ pub const ElfFile = struct {
         const sh_off: usize = @intCast(hdr.e_shoff);
         if (sh_entsize != @sizeOf(elf.Elf64_Shdr)) return ParseError.CorruptSectionTable;
         if (sh_count > 0) {
-            const table_end = sh_off + @as(usize, sh_count) * sh_entsize;
+            // Overflow-safe: std.math.mul/add return error on wrap
+            const table_size = std.math.mul(usize, sh_count, sh_entsize) catch
+                return ParseError.CorruptSectionTable;
+            const table_end = std.math.add(usize, sh_off, table_size) catch
+                return ParseError.CorruptSectionTable;
             if (table_end > bytes.len) return ParseError.CorruptSectionTable;
         }
 
@@ -105,8 +109,10 @@ pub const ElfFile = struct {
 
             const off: usize = @intCast(strtab_hdr.sh_offset);
             const size: usize = @intCast(strtab_hdr.sh_size);
-            if (off + size > bytes.len) return ParseError.CorruptSectionTable;
-            shstrtab = bytes[off .. off + size];
+            if (off > bytes.len or size > bytes.len - off) {
+                return ParseError.CorruptSectionTable;
+            }
+            shstrtab = bytes[off..][0..size];
         }
 
         return ElfFile{
@@ -232,6 +238,19 @@ test "parse accepts a minimal header with no sections" {
     try testing.expectEqual(@as(usize, 0), file.sectionCount());
     try testing.expect(file.header.e_machine == .BPF);
     try testing.expectEqual(elf.ELFCLASS64, file.header.e_ident[elf.EI.CLASS]);
+}
+
+test "parse rejects e_shoff near u64.max (overflow-safe bounds)" {
+    // Malicious ELF: legitimate header but e_shoff is so large that
+    // `sh_off + sh_count * sh_entsize` would overflow usize. The parser
+    // should return CorruptSectionTable, never panic. Regression for
+    // the audit phase-4 fix in elf/reader.zig.
+    var bytes = makeMinimalHeader();
+    // e_shoff at offset 40 (u64 LE)
+    std.mem.writeInt(u64, bytes[40..48], std.math.maxInt(u64) - 16, .little);
+    // e_shnum at offset 60 (u16 LE)
+    std.mem.writeInt(u16, bytes[60..62], 2, .little);
+    try testing.expectError(ParseError.CorruptSectionTable, ElfFile.parse(&bytes));
 }
 
 // Real-file integration tests live in `src/integration_test.zig`, with

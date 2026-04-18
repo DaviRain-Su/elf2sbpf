@@ -98,4 +98,17 @@ _按 phase 顺序追加；每条格式：`[P{N}] severity · 位置 · 描述 ·
 
 **Phase 3 小结**：CI 加两个保护网（`zig fmt --check` + V3 smoke），防止格式漂移和 V3 入口 regression。`linkProgramV3` / `linkProgramWithSyscalls` 获得 error-path 直接覆盖。376/376 tests 绿（原 370 + 6）。
 
+### Phase 4 findings（2026-04-18 第 4 轮）
+
+| # | severity | 位置 | 描述 | 行动 |
+|---|----------|------|------|------|
+| 4.1 | good | `src/*` | 全仓扫 `@panic` / `unreachable` / `std.debug.assert`：**零命中**。Zig error-union 纪律到位 | 无需行动 |
+| 4.2 | good | `src/*` | 全仓扫 `@ptrCast` / `@alignCast`：src 里零命中，全部走 slice + `readInt`。攻击面最小 | 无需行动 |
+| 4.3 | **medium** | `src/elf/{section,reader,symbol}.zig` | 多处 `off + sz > bytes.len` 的边界检查在 adversarial ELF 下可能 **usize 溢出绕过**（ReleaseSafe 会 panic，ReleaseFast 是 UB）。涉及 4 个检查点 | ✅ 改成 `off > bytes.len or sz > bytes.len - off` + `std.math.mul/add` 带 overflow 检测（reader.zig 的 section table 乘法）；slicing 改成 `bytes[off..][0..sz]` 等价但更清楚 |
+| 4.4 | low | 缺少 adversarial-input 回归测试 | 改好边界后加 1 条测试：`e_shoff` 近 `u64.max` 时应清 error 返回 | ✅ `test "parse rejects e_shoff near u64.max (overflow-safe bounds)"` |
+| 4.5 | good | `thread_extra_syscalls` 并发 | threadlocal 语义：每线程独立；save/restore 处理 nested 调用；无 data race | 无需行动 |
+| 4.6 | good | Memory safety | 所有测试使用 `std.testing.allocator`（GPA leak detector）；378/378 通过即代表无泄漏 | 无需行动 |
+
+**Phase 4 小结**：发现 1 个 medium-severity bug（恶意 ELF 可能触发 usize 溢出绕过边界检查 → panic/UB）—— 4 个检查点全部改成 overflow-safe，加了一条回归测试。没有其他健壮性问题。378/378 tests 全绿。
+
 
