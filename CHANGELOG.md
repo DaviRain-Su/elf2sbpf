@@ -1,119 +1,80 @@
 # Changelog
 
-本仓库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 风格，
-版本号遵循 [SemVer](https://semver.org/)。日期格式 `YYYY-MM-DD`。
+[中文版本](CHANGELOG.zh.md)
+
+This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
+and [SemVer](https://semver.org/). Dates use the `YYYY-MM-DD` format.
 
 ## [Unreleased]
 
-- 视反馈而定。zignocchio PR 合并后可能带来后续迭代；V3 / debug info
-  等 D 阶段功能继续按生态需求排优先级。
+- Pending feedback and follow-up work after the zignocchio PR lands.
+- D-stage items such as V3 and debug-info support will continue to be prioritized
+  based on ecosystem demand.
 
 ## [0.1.0] — 2026-04-18
 
-首个对外发布。C1 MVP + C2 的内部收尾 / 回归防线 / 上游集成都到位。
+First public release. C1 MVP is complete, and the main C2 hardening,
+regression guardrails, and upstream integration work are already in place.
 
-### Added — C2 成果（继 C1 之上）
+### Added — C2 deliverables on top of C1
 
-- **Fuzz-lite 回归防线**（`scripts/fuzz/`）：随机 zignocchio 风格
-  example 生成器 + 字节对拍 harness；160/160 MATCH 实测
-- **GitHub Actions CI**：push / PR 自动跑 `zig build test` + CLI
-  smoke（ubuntu-latest + macos-latest）
-- **zignocchio 集成 Draft PR**：Solana-ZH/zignocchio#1 ——
-  `-Dlinker=elf2sbpf` 默认 / `-Dlinker=sbpf-linker` 回退
-- **LICENSE**（MIT）、`docs/install.md`、`docs/decisions.md`
-  （ADR-001/002）、完整 C2-tasks.md
-- **运行时验证决策**（ADR-001）：不引入 litesvm / solana-sbpf
-  桥接；字节对等传递覆盖 runtime，双 oracle failure 概率可忽略
+- **Fuzz-lite regression guardrail** (`scripts/fuzz/`): randomized
+  zignocchio-style example generator plus byte-diff harness; verified at
+  160/160 MATCH
+- **GitHub Actions CI**: automatic `zig build test` + CLI smoke tests on push / PR
+  (`ubuntu-latest` + `macos-latest`)
+- **zignocchio integration draft PR**: `Solana-ZH/zignocchio#1` with
+  `-Dlinker=elf2sbpf` as default and `-Dlinker=sbpf-linker` as fallback
+- **LICENSE** (MIT), `docs/install.md`, `docs/decisions.md` (ADR-001/002),
+  and complete `docs/C2-tasks.md`
+- **Runtime-validation decision (ADR-001)**: do not introduce litesvm /
+  solana-sbpf bridging; bytewise equivalence already covers runtime behavior
+  for this stage, and double-oracle failure is negligible
 
-### Added — C1 成果
+### Added — C1 deliverables
 
-- **Zig 0.16 原生实现**：完整 port Rust `sbpf-linker` stage 2 到 Zig，
-  零 Rust / libLLVM 依赖
-- **9/9 zignocchio example byte-identical to `reference-shim`**
-  （hello / noop / logonly / counter / vault / transfer-sol /
-  pda-storage / escrow / token-vault；304 B 到 20 KB 规模）
-- **改进版 rodata gap-fill 算法**：正确处理 Zig/clang 默认产出的
-  `.rodata.str1.1`（只有 STT_SECTION 符号、多字符串的情况）
-- **CLI**：`elf2sbpf input.o output.so` 端到端可用
-- **zignocchio 集成草稿**：`docs/integrations/zignocchio-build.zig`
-- **Syscall 反查表**：30 个标准 Solana syscall 的 murmur3 hash →
-  name 反查
-- **完整 dev-lifecycle 文档**（全部中文）：PRD / Architecture /
-  Technical Spec / Test Spec / Task Breakdown / Implementation
-  Log / Decisions
+- **Native Zig 0.16 implementation**: a full port of Rust `sbpf-linker` stage 2
+  to Zig, with zero Rust / libLLVM dependency in elf2sbpf itself
+- **All 9 zignocchio examples byte-identical to `reference-shim`**
+  (`hello`, `noop`, `logonly`, `counter`, `vault`, `transfer-sol`,
+  `pda-storage`, `escrow`, `token-vault`; from 304 B to ~20 KB)
+- **Improved rodata gap-fill algorithm**: correctly handles Zig/clang-generated
+  `.rodata.str1.1` with only `STT_SECTION` symbols and multiple strings
+- **CLI**: `elf2sbpf input.o output.so` works end to end
+- **zignocchio integration draft**: `docs/integrations/zignocchio-build.zig`
+- **Syscall reverse lookup table**: Murmur3 hash → name mapping for 30 standard
+  Solana syscalls
+- **Complete dev-lifecycle documentation set**: PRD / Architecture /
+  Technical Spec / Test Spec / Task Breakdown / Implementation Log / Decisions
 
 ### Supported
 
-- Solana SBPF V0（dynamic + static）
-- BPF ELF 目标文件输入（Zig / clang / 任何 LLVM BPF 前端产出）
-- macOS arm64 + Linux x86_64（CI 验证）
+- Solana SBPF V0 (dynamic + static)
+- BPF ELF object input (from Zig / clang / any LLVM BPF frontend)
+- macOS arm64 + Linux x86_64 (validated in CI)
 
 ### Not supported (deferred)
 
-- SbpfArch V3（推到 D.1）
-- Debug info（`.debug_*`）保留（推到 D.2）
-- 动态 syscall relocation（推到 D.3）
-- 作为 Zig 库被 import（推到 D.4）
-- Windows（推到 D.5）
+- SbpfArch V3 (deferred to D.1)
+- Debug info (`.debug_*`) preservation (deferred to D.2)
+- Dynamic syscall relocation (deferred to D.3)
+- Importing elf2sbpf as a Zig library (deferred to D.4)
+- Windows (deferred to D.5)
 
 ### Known issues
 
-- `scripts/validate-zig.sh` 依赖 zignocchio 源码仓；CI 里跳过，
-  只跑 committed golden 的 byte-diff
-- `sbpf-linker` 作为 fallback 时在 macOS 上需要用户手动
+- `scripts/validate-zig.sh` depends on a zignocchio checkout; CI skips it and
+  only runs the committed-golden byte-diff path
+- When using `sbpf-linker` as fallback on macOS, users may still need:
   `export DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/opt/llvm/lib`
-  （这是原 sbpf-linker 的平台限制，不属于 elf2sbpf 范围）
+  This is a platform limitation of the original `sbpf-linker`, not elf2sbpf
 
 ### Acknowledgments
 
-port 自 [blueshift-gg/sbpf-linker](https://github.com/blueshift-gg/sbpf-linker)
-（byteparser + CLI）和 [blueshift-gg/sbpf](https://github.com/blueshift-gg/sbpf)
-（common + assembler crates）。`reference-shim/` 目录保留（ADR-002）
-作为字节对等 oracle。
-
-### Added
-- **Zig 0.16 原生实现**：完整 port Rust `sbpf-linker` stage 2 到 Zig，
-  零 Rust / libLLVM 依赖
-- **9/9 zignocchio example byte-identical to `reference-shim`**
-  （hello / noop / logonly / counter / vault / transfer-sol /
-  pda-storage / escrow / token-vault；304 B 到 20 KB 规模）
-- **GitHub Actions CI**：ubuntu-latest + macos-latest 矩阵，每 push / PR
-  自动跑 `zig build test` + CLI smoke test
-- **改进版 rodata gap-fill 算法**：正确处理 Zig/clang 默认产出的
-  `.rodata.str1.1`（只有 STT_SECTION 符号、多字符串的情况），原
-  `sbpf-linker` 在这个场景下会 regression 成单大块 anon entry
-- **CLI**：`elf2sbpf input.o output.so` 端到端可用；LinkError 错误
-  枚举覆盖所有失败路径
-- **zignocchio 集成草稿**：`docs/integrations/zignocchio-build.zig` —
-  drop-in build.zig，`-Dlinker=elf2sbpf` 默认 / `-Dlinker=sbpf-linker`
-  legacy 回退
-- **Syscall 反查表**：30 个标准 Solana syscall 的 murmur3 hash →
-  name 反查，让 Zig BPF 编译器 bake-in 的 V3 hash 能正确转回 V0 形式
-- **完整 dev-lifecycle 文档**：PRD / Architecture / Technical Spec /
-  Test Spec / Task Breakdown / Implementation Log 全部到位
-  （所有文档中文）
-
-### Supported
-- Solana SBPF V0（dynamic + static）
-- BPF ELF 目标文件输入（Zig / clang / 任何 LLVM BPF 前端产出）
-- macOS arm64 + Linux x86_64
-
-### Not supported (deferred)
-- SbpfArch V3（推到 C2+ / D.1）
-- Debug info（`.debug_*`）保留（推到 D.2）
-- 动态 syscall relocation（推到 D.3）
-- 作为 Zig 库被 import（推到 D.4）
-- Windows（推到 D.5）
-
-### Known issues
-- `scripts/validate-zig.sh` 依赖 zignocchio 源码仓；CI 里跳过，只跑
-  committed golden 的 byte-diff
-
-### Acknowledgments
-port 自 [blueshift-gg/sbpf-linker](https://github.com/blueshift-gg/sbpf-linker)
-（byteparser + CLI）和 [blueshift-gg/sbpf](https://github.com/blueshift-gg/sbpf)
-（common + assembler crates）。`reference-shim/` 目录保留了 Rust
-oracle 的最小实现，C1 阶段作为字节对等基准使用。
+Ported from [blueshift-gg/sbpf-linker](https://github.com/blueshift-gg/sbpf-linker)
+(byteparser + CLI) and [blueshift-gg/sbpf](https://github.com/blueshift-gg/sbpf)
+(common + assembler crates). `reference-shim/` is intentionally kept in-tree
+(ADR-002) as the byte-equivalence oracle.
 
 ---
 

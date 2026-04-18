@@ -1,133 +1,147 @@
-# 安装 elf2sbpf
+# Installing elf2sbpf
 
-三种方式，按你的场景选：
+[中文版本](install.zh.md)
 
-| 场景 | 方法 | 命令 |
+Choose one of these three approaches depending on your workflow:
+
+| Scenario | Method | Command |
 |------|------|------|
-| 开发 / 日常使用 | 从源码构建到 `~/.local` | `zig build -p ~/.local` |
-| CI / 一次性 | 就地构建不装 | `zig build && ./zig-out/bin/elf2sbpf ...` |
-| 全局（/usr/local） | sudo 安装 | `sudo zig build -p /usr/local` |
+| Development / daily use | Build from source into `~/.local` | `zig build -p ~/.local` |
+| CI / one-off use | Build in place without installing | `zig build && ./zig-out/bin/elf2sbpf ...` |
+| System-wide (`/usr/local`) | Install with sudo | `sudo zig build -p /usr/local` |
 
-## 前置条件
+## Prerequisite
 
-**只要一样东西**：[Zig 0.16.0](https://ziglang.org/download/)
+You only need **one thing**: [Zig 0.16.0](https://ziglang.org/download/)
 
-这里列一下 elf2sbpf **不需要** 什么：
+Here is what elf2sbpf does **not** require:
 
 - ❌ Rust / cargo / rustup
 - ❌ `cargo install sbpf-linker`
-- ❌ 单独安装的 LLVM（`brew install llvm` / `apt install llvm-20`）
-- ❌ `LD_LIBRARY_PATH` 或 libLLVM.so 符号链接 hack
+- ❌ A separately installed LLVM (`brew install llvm` / `apt install llvm-20`)
+- ❌ `LD_LIBRARY_PATH` or `libLLVM.so` symlink hacks
 
-Zig 编译器里自带 `zig cc`（drop-in clang）和 libLLVM，所以当你装好
-Zig 的时候，所需的 LLVM codegen 能力就已经在了。
+The Zig compiler already bundles `zig cc` (a drop-in clang) and libLLVM, so
+once Zig is installed, the LLVM codegen capability you need is already there.
 
-## 从源码构建（推荐）
+## Build from source (recommended)
 
 ```bash
 git clone https://github.com/DaviRain-Su/elf2sbpf
 cd elf2sbpf
 
-# 构建 + 安装到 ~/.local/bin/elf2sbpf
+# Build + install to ~/.local/bin/elf2sbpf
 zig build -p ~/.local
 
-# 确认 PATH 里有 ~/.local/bin
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # 或 ~/.bashrc
+# Make sure ~/.local/bin is on PATH
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
 source ~/.zshrc
 
-# 验证
+# Verify
 elf2sbpf --help 2>&1 | head -3
 ```
 
-macOS arm64 产物 ~1.8 MB，静态二进制。`otool -L` 会确认它不链
-libLLVM（因为 elf2sbpf 本身不做 codegen）。
+On macOS arm64 the binary is roughly ~1.8 MB and statically linked. `otool -L`
+will confirm that it does not link against libLLVM, because elf2sbpf itself
+never performs codegen.
 
-## 上手 10 分钟
+## Ten-minute quick start
 
-假设你已经有一个 BPF ELF `.o`（从 `zig cc` / `clang` / `rustc --emit=obj`
-出来）：
+Assume you already have a BPF ELF `.o` file produced by `zig cc`, `clang`, or
+`rustc --emit=obj`:
 
 ```bash
-# 用仓库里的 hello.o 做示例
+# Use the repository's hello.o as an example
 elf2sbpf src/testdata/hello.o /tmp/hello.so
 
-# 产物跟 reference-shim 字节一致
+# Output is byte-identical to reference-shim
 cmp /tmp/hello.so src/testdata/hello.shim.so
 echo $?   # 0 = MATCH
 ```
 
-把 `.so` 部署到 Solana 用 `solana program deploy /tmp/hello.so`。
-
-## 从零起步（Zig 源码 → .so）
+You can then deploy the `.so` to Solana with:
 
 ```bash
-# Stage 1: Zig 源码 → LLVM bitcode
+solana program deploy /tmp/hello.so
+```
+
+## From scratch (Zig source → .so)
+
+```bash
+# Stage 1: Zig source → LLVM bitcode
 zig build-lib \
   -target bpfel-freestanding -mcpu=v2 -O ReleaseSmall \
   -femit-llvm-bc=program.bc -fno-emit-bin \
   -Mroot=program.zig
 
-# Stage 2: bitcode → BPF ELF（用 Solana 的 4KB 栈预算）
+# Stage 2: bitcode → BPF ELF (using Solana's 4KB stack budget)
 zig cc \
   -target bpfel-freestanding -mcpu=v2 -O2 \
   -mllvm -bpf-stack-size=4096 \
   -c program.bc -o program.o
 
-# Stage 3: BPF ELF → Solana SBPF .so（elf2sbpf 只管这一步）
+# Stage 3: BPF ELF → Solana SBPF .so (this is the only step elf2sbpf handles)
 elf2sbpf program.o program.so
 ```
 
-整个管道：3 步，零外部依赖。之前用 `sbpf-linker` 走的是 2 步，但
-需要 Rust + cargo + libLLVM.so.20。
+This is a 3-stage pipeline with zero external dependencies. The older
+`sbpf-linker` workflow used 2 stages, but required Rust + cargo + libLLVM.so.20.
 
-## 为什么不用 cargo install sbpf-linker？
+## Why not `cargo install sbpf-linker`?
 
-简答：`sbpf-linker` 把 LLVM 打到 Rust 二进制里，用 `aya-rustc-llvm-proxy`
-在运行时动态加载 libLLVM。这带来三个问题：
+Short version: `sbpf-linker` embeds LLVM logic into a Rust binary and uses
+`aya-rustc-llvm-proxy` to dynamically load libLLVM at runtime. That creates
+three problems:
 
-1. **LLVM 版本锁死**：sbpf-linker pin 的是 LLVM 20；但 Zig 0.16 已经
-   跟 LLVM 21+ 出来了。系统 LLVM 一升级，sbpf-linker 就坏
-2. **Linux 特定 hack**：许多发行版的 `libLLVM.so` 只有版本号后缀的
-   文件（`libLLVM.so.20.1`），sbpf-linker 的 proxy 找不到。得
+1. **LLVM version lock-in**:
+   sbpf-linker is pinned to LLVM 20, while Zig 0.16 already tracks LLVM 21+.
+   Once the system LLVM moves, sbpf-linker tends to break.
+2. **Linux-specific hacks**:
+   many distros only expose version-suffixed `libLLVM.so` files such as
+   `libLLVM.so.20.1`, which the proxy cannot find. Users end up creating manual
+   symlinks like:
    `ln -sf .../libLLVM.so.20.1 .zig-cache/llvm_fix/libLLVM.so`
-3. **双工具链**：用户得先装 Rust 才能"给 Zig 构建 Solana 程序"，
-   这从 DX 看很别扭
+3. **Two toolchains instead of one**:
+   users must install Rust just to build Solana programs from Zig, which is a
+   poor developer experience.
 
-`zig cc` bridge（`zig build-lib -femit-llvm-bc` 然后 `zig cc -mllvm
--bpf-stack-size=4096 -c`）完全规避了这三件事——LLVM 被藏在 Zig
-里面，version drift 自然跟着 Zig 走，没有 `libLLVM.so` 查找问题。
+The `zig cc` bridge (`zig build-lib -femit-llvm-bc` followed by
+`zig cc -mllvm -bpf-stack-size=4096 -c`) avoids all three issues. LLVM stays
+hidden inside Zig, version drift follows Zig naturally, and there is no
+standalone `libLLVM.so` lookup problem.
 
-## 作为 Zig 项目依赖
+## Using it as a Zig project dependency
 
-elf2sbpf 目前以 CLI 形式发布。如果你想把它作为 Zig 库 import
-（Epic D.4），暂时需要手工 vendor：
+elf2sbpf is currently published as a CLI. If you want to import it as a Zig
+library (Epic D.4), you currently need to vendor it manually:
 
 ```bash
 mkdir -p vendor/elf2sbpf
 cp -r /path/to/elf2sbpf/src vendor/elf2sbpf/
-# 在 build.zig 里加 module
+# then add a module in build.zig
 ```
 
-API 是否稳定到可以作为公开 Zig 库依赖，C2 阶段结束后再评估。
+Whether the API is stable enough to be used as a public Zig library dependency
+will be evaluated after C2 is complete.
 
-## 升级 / 卸载
+## Upgrade / uninstall
 
 ```bash
-# 升级（拉最新代码 + 重装）
+# Upgrade (pull latest code + reinstall)
 cd elf2sbpf && git pull && zig build -p ~/.local
 
-# 卸载
+# Uninstall
 rm ~/.local/bin/elf2sbpf
 ```
 
-## 遇到问题
+## Troubleshooting
 
-- **`zig: command not found`**：先装 Zig 0.16.0
-- **版本不匹配**：`zig version` 必须是 0.16.x；0.15 / 0.17 不支持
-- **`Illegal instruction` 部署时**：八成是 ELF 布局问题；跑
-  `./scripts/validate-zig.sh <example>` 跟 shim 比一下看看是不是
-  regression
-- **zignocchio build.zig 里的 `libLLVM.so` 符号链接**：用
-  `-Dlinker=elf2sbpf` 就不用了，可以删
+- **`zig: command not found`**: install Zig 0.16.0 first
+- **Version mismatch**: `zig version` must be 0.16.x; 0.15 / 0.17 are unsupported
+- **`Illegal instruction` at deployment time**: this is likely an ELF layout
+  issue; run `./scripts/validate-zig.sh <example>` against the shim to check
+  whether you hit a regression
+- **`libLLVM.so` symlink hacks in zignocchio `build.zig`**: if you switch to
+  `-Dlinker=elf2sbpf`, you no longer need them and can remove them
 
-深层问题请开 issue。
+For deeper issues, please open an issue.

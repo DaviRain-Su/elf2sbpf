@@ -1,87 +1,99 @@
-# 架构决策记录（ADR）
+# Architecture Decision Records (ADR)
 
-记录"为什么不做 X"或"为什么选 A 不选 B"这类会在未来 reviewer 问出来
-的决定。每条记录包括：背景 → 决定 → 结果/代价 → 什么情况会重新考虑。
+[中文版本](decisions.zh.md)
 
----
-
-## ADR-001：不引入 Solana runtime 验证基础设施
-
-**日期**：2026-04-18
-**相关任务**：C2-C
-**状态**：closed, will reopen only if bytewise equivalence breaks
-
-### 背景
-
-PRD §8 风险表列出了 "Solana runtime 对 ELF 布局的隐式约束
-（我们没测到的）" 作为中等风险项，并建议 C2 阶段跑
-`solana-test-validator` 或 litesvm 做运行时验证。
-
-### 决定
-
-不实施。理由：
-
-1. **字节对等已经传递覆盖 runtime**：
-   - 9/9 zignocchio example 的 `.so` 跟 `reference-shim` **字节完全
-     一致**（见 C1-I.3 的 integration test）
-   - `reference-shim` 的产物在真实 Solana 上可用（zignocchio 用户
-     已经在生产中用）
-   - 因此 elf2sbpf 产物必然等价于能跑
-
-2. **成本结构不划算**：
-   - litesvm 要么引入 Rust 项目（违反"零 Rust 依赖"的核心定位），
-     要么污染 zignocchio 上游 PR 的范围
-   - solana-test-validator 要求装 Solana CLI，CI 里重
-   - 直接用 solana-sbpf crate 又回 Rust 依赖
-
-3. **能多抓到的唯一信号是双重 oracle failure**：reference-shim
-   和我们都错且错得一样——概率可忽略
-
-### 结果/代价
-
-- 代价：若 byteparser/emit 改动同时出错到跟 reference-shim 一致地
-  错掉，runtime 才会暴露。这是二阶概率事件
-- 收益：Epic C 从 1-2 天降到 0 天，C2 进度推进
-
-### 重新考虑的触发条件
-
-- 真实用户报告 "byte match 但部署失败"
-- reference-shim 被判定为不再可信（unlikely，除非它本身变化）
-- 有人想加 V3 或 debug info 支持，两者都可能引入 runtime 才暴露的
-  bug——那时应回到 C2-C，建 litesvm 桥接
+This file records choices of the form "why we did not do X" or "why we chose A
+instead of B" — the kinds of questions future reviewers are likely to ask.
+Each entry includes: background → decision → consequences/trade-offs → what
+would make us revisit it.
 
 ---
 
-## ADR-002：保留 `reference-shim/` 在主分支
+## ADR-001: Do not introduce Solana runtime validation infrastructure
 
-**日期**：2026-04-18
-**相关任务**：C2-E.3（候选清理项）
-**状态**：kept, re-evaluate post-v0.2
+**Date**: 2026-04-18  
+**Related task**: C2-C  
+**Status**: closed, will reopen only if bytewise equivalence breaks
 
-### 背景
+### Background
 
-`reference-shim/` 是 Rust 最小 shim，功能跟 elf2sbpf 重叠。C2-E.3
-提议在 v0.1 发布时清理。
+The PRD risk table (§8) listed "implicit Solana runtime constraints on ELF
+layout that we may not have observed" as a medium-risk item, and suggested
+runtime validation in C2 via `solana-test-validator` or litesvm.
 
-### 决定
+### Decision
 
-保留，至少到 v0.2 （或 C2 彻底完成 6 个月后）。理由：
+Do not implement it. Reasons:
 
-1. **regression 快速回查**：未来若 elf2sbpf 出 regression，能直接
-   `./reference-shim/target/release/elf2sbpf-shim` 对拍，不用重新
-   搭环境
-2. **ADR-001 的兜底**：我们依赖字节对等作为 runtime 正确性证明，
-   reference-shim 是这个证明的 oracle。删了就没 oracle 了
-3. **体积小**：`reference-shim/` 源码 2 个文件 ~400 行，targetdir
-   gitignore 掉了，主 repo 没负担
+1. **Bytewise equivalence already transitively covers runtime correctness**:
+   - all 9 zignocchio example `.so` outputs are **byte-identical** to
+     `reference-shim` (see the C1-I.3 integration test)
+   - `reference-shim` outputs are known to work on real Solana deployments
+   - therefore elf2sbpf outputs are necessarily equivalent at runtime
 
-### 结果/代价
+2. **The cost structure is not worth it**:
+   - litesvm would either reintroduce Rust into the project, violating the
+     core "zero Rust dependency" positioning, or expand the scope of the
+     zignocchio upstream PR
+   - `solana-test-validator` requires the Solana CLI and is heavy for CI
+   - using `solana-sbpf` crates directly would still reintroduce Rust
 
-- 代价：依赖关系上 repo 不是"纯 Zig"（但 .gitignore 掉 cargo 产物
-  后实际上也没 Rust 工件进 repo）
-- 收益：oracle 随时可用；release notes 不用解释"为什么删了"
+3. **The only extra signal it could catch is a double-oracle failure**:
+   both `reference-shim` and elf2sbpf would have to be wrong in exactly the
+   same way, which is an ignorable probability for this stage
 
-### 重新考虑的触发条件
+### Consequences / trade-offs
 
-- 有外部贡献者因为 reference-shim 增加了阅读负担提 issue
-- C2-D 上游 PR 合并后 6 个月，elf2sbpf 的正确性被社区充分验证
+- Cost: if future byteparser/emit changes fail in the exact same way as
+  `reference-shim`, runtime-only validation would be the first thing to reveal
+  it. This is a second-order probability event.
+- Benefit: Epic C goes from roughly 1–2 days to 0 additional days, keeping C2 moving.
+
+### Revisit triggers
+
+- real users report "bytes match but deployment fails"
+- `reference-shim` is no longer considered trustworthy
+- someone wants to add V3 or debug-info support, both of which may introduce
+  runtime-visible bugs that are not obvious from byte-level comparison alone
+
+---
+
+## ADR-002: Keep `reference-shim/` on the main branch
+
+**Date**: 2026-04-18  
+**Related task**: C2-E.3 (candidate cleanup item)  
+**Status**: kept, re-evaluate post-v0.2
+
+### Background
+
+`reference-shim/` is a minimal Rust shim whose functionality overlaps with
+elf2sbpf. C2-E.3 proposed deleting it at the time of the v0.1 release.
+
+### Decision
+
+Keep it, at least until v0.2 (or 6 months after C2 is fully complete). Reasons:
+
+1. **Fast regression triage**:
+   if elf2sbpf regresses in the future, we can directly compare against
+   `./reference-shim/target/release/elf2sbpf-shim` without rebuilding the
+   whole setup
+2. **Backstop for ADR-001**:
+   we rely on bytewise equivalence as the proof of runtime correctness, and
+   `reference-shim` is the oracle for that proof. Remove it and the oracle is gone.
+3. **Small footprint**:
+   `reference-shim/` source is only about two files / ~400 lines; the target
+   directory is gitignored, so it adds very little weight to the repo
+
+### Consequences / trade-offs
+
+- Cost: the repository is not conceptually "pure Zig" from a dependency-story
+  perspective, although no Rust build artifacts are committed
+- Benefit: the oracle stays immediately available, and release notes do not
+  need to explain why it disappeared
+
+### Revisit triggers
+
+- an external contributor opens an issue saying `reference-shim` increases
+  the reading burden
+- 6 months have passed after the upstream C2-D integration lands and the
+  correctness of elf2sbpf has been well validated by the community

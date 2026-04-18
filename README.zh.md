@@ -40,7 +40,7 @@ elf2sbpf input.o output.so
 macOS arm64 + Linux x86_64 官方支持；其它平台理论可用（Zig 本身跨平台）
 但未测试。
 
-完整安装指南：`docs/install.md`。
+完整安装指南：`docs/install.zh.md`。
 
 ## 接入到你的 Zig Solana 项目
 
