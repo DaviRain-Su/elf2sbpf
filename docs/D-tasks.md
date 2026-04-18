@@ -253,6 +253,56 @@ CFG / 类型 / alias 信息）。我们在 **字节码层**做优化（看得见
 | **D.7.7** | Syscall 批量优化 | AST | log 密集 5-10% CU | 高 | 相邻 `sol_log_` 合并成一次；相邻 `sol_log_64_` 参数打包 |
 | **D.7.8** | Section 布局优化（hot-first）| emit | 微小（VM cache 局部性）| 低 | entry 附近的 `.text` 靠前；冷路径靠后 |
 | **D.7.9** | `.text` jump relaxation | emit | 0-1% 体积 | 高 | 长跳转（`call`）如果目标在短范围内换成短形式；跟当前 SBPF encoding 是否允许相关 |
+| **D.7.10** | Unaligned u64 load coalescing | AST | stock-zig pipeline ~12× CU（pubkey 187→~19）| 高 | 把 `bpfel -O2` 对 `load i64 align 1` 展开的 8×ldxb + shift/or 链重写成单条 `ldxdw`。详见下方 D.7.10 专节 |
+
+### D.7.10 —— Unaligned u64 load coalescing（专节）
+
+**触发场景**：用户走 `stock-zig → zig cc -target bpfel → elf2sbpf` 管
+道。Solana LLVM fork 允许非对齐 64-bit load；stock LLVM 保守把它们
+拆成 8 次 u8 load + shift/or 链（每 u64 load 耗 22 条指令，对比
+solana-zig 的 1 条 `ldxdw`）。solana-program-rosetta 实测：Pubkey
+compare 15 CU（solana-zig）vs 187 CU（stock-zig+elf2sbpf），12.5×
+gap 基本都来自这里。
+
+**V1 detector（已完成，2026-04-18）**：
+- `src/ast/peephole.zig` + `linkProgram` 侧 `peepholeReport()` API
+- CLI `elf2sbpf --peephole-report <input.o>` 列出候选 cluster
+- 实测结果：
+  - pubkey.o：8 个 cluster，168 条可省（gap 172）
+  - transfer-lamports.o：1 个 cluster，21 条可省（gap 23）
+  - 9 个 V0 goldens（solana-zig 编的）：hello/noop/logonly 0 cluster；
+    vault 7 cluster（ReleaseSmall 下 solana-zig 也没全 inline）
+- 关键 safety：locality guard（同 base、连续 offsets、但跨 40+ 条
+  指令的 scatter 载入不算）防止跨 BB 误匹配
+
+**V2 rewriter（未开工）— 非 trivial 编译器 pass**：
+
+删除指令 → 所有后续 offset 变化 → 要同步修正：
+1. `Jxxx/Ja` 的 `off`（相对 PC+1 的跳转距离）
+2. `Call` 的 `imm`（本地 call 是相对指令数）
+3. `.rel.dyn` 每条的 `r_offset`（byte offset in .text）
+4. `dynsym` 里 function 的 `st_value`
+5. V3 static layout 的 `e_entry` 和 section sh_addr
+
+另外还要加：
+- register 活跃性分析（中间 shift 寄存器必须在 pattern 外没用）
+- shift/or 链完整性验证（不能只 match ldxb，shift consts 必须是
+  0/8/16/24/32/40/48/56 按顺序贡献到同一目标 reg）
+- cross-pattern interleaving 处理（多个 u64 load 的 ldxb 可能交
+  织）
+
+估计 3-5 个工作日 + 大量测试。上线策略：
+- **opt-in flag**（`--peephole` / `linkProgramOptimized`），默认关
+- 现有 19 个 goldens 走默认路径不受影响（byte-diff 保留）
+- 新增独立测试 `peephole-goldens/`：stock-zig 编的 `.o` → elf2sbpf
+  `--peephole` `.so` → litesvm 跑通 + CU 对比 solana-zig 目标值
+
+**先不做 V2 的条件**：
+- 除非有用户明确报 CU 问题，不排期
+- 优先做 D.7.1 + D.7.3（收益稳定、实现简单、不 break byte-diff）
+- 如果 Zig 上游把 `.solana` feature 加到 `bpfel` target（patch
+  LLVM，让 `load i64 align 1` 合法），V2 就可以直接砍掉——codegen
+  层免费拿回这个 gap
 
 ### 先做哪个？
 
@@ -303,7 +353,7 @@ CFG / 类型 / alias 信息）。我们在 **字节码层**做优化（看得见
 | D.4 Zig 库 API | ✅ 完成，v0.3.0 已发 |
 | D.5 Windows | 未开始（等用户报需求） |
 | D.6 跨语言前端 | 战略愿景，不排期 |
-| **D.7 字节码层优化** | **路线图就位，未排期** |
+| **D.7 字节码层优化** | 路线图就位，V1 detector（D.7.10）已落，V2 rewriter 未排期 |
 
 ---
 

@@ -10,6 +10,9 @@ const ParsedArgs = union(enum) {
         output_path: []const u8,
         arch: linker.SbpfArch,
     },
+    report: struct {
+        input_path: []const u8,
+    },
 };
 
 fn parseArgv(args: []const []const u8) UsageError!ParsedArgs {
@@ -18,8 +21,11 @@ fn parseArgv(args: []const []const u8) UsageError!ParsedArgs {
     {
         return .help;
     }
-    // Accept [--v0|--v3] anywhere among the positional args. Defaults to V0.
+    // Accept [--v0|--v3|--peephole-report] anywhere among the positional
+    // args. `--peephole-report` takes one positional (input only); the
+    // run modes take two. Arch defaults to V0.
     var arch: linker.SbpfArch = .V0;
+    var report_mode = false;
     var positional: [2][]const u8 = .{ "", "" };
     var pos_idx: usize = 0;
     for (args[1..]) |arg| {
@@ -27,12 +33,18 @@ fn parseArgv(args: []const []const u8) UsageError!ParsedArgs {
             arch = .V0;
         } else if (std.mem.eql(u8, arg, "--v3")) {
             arch = .V3;
+        } else if (std.mem.eql(u8, arg, "--peephole-report")) {
+            report_mode = true;
         } else if (pos_idx < 2) {
             positional[pos_idx] = arg;
             pos_idx += 1;
         } else {
             return UsageError.InvalidArgs;
         }
+    }
+    if (report_mode) {
+        if (pos_idx != 1) return UsageError.InvalidArgs;
+        return .{ .report = .{ .input_path = positional[0] } };
     }
     if (pos_idx != 2) return UsageError.InvalidArgs;
     return .{ .run = .{
@@ -43,7 +55,11 @@ fn parseArgv(args: []const []const u8) UsageError!ParsedArgs {
 }
 
 fn printUsage(writer: anytype) !void {
-    try writer.writeAll("Usage: elf2sbpf [--v0|--v3] <input.o> <output.so>\n");
+    try writer.writeAll(
+        \\Usage: elf2sbpf [--v0|--v3] <input.o> <output.so>
+        \\       elf2sbpf --peephole-report <input.o>
+        \\
+    );
 }
 
 fn linkErrorExitCode(err: linker.LinkError) u8 {
@@ -101,6 +117,40 @@ fn runCli(
                 .data = out,
             }) catch return .write_error;
 
+            return .ok;
+        },
+        .report => |report| {
+            const elf_bytes = cwd.readFileAlloc(io, report.input_path, allocator, .limited(std.math.maxInt(usize))) catch return .read_error;
+            defer allocator.free(elf_bytes);
+
+            var r = linker.peepholeReport(allocator, elf_bytes) catch |err|
+                return .{ .link_error = err };
+            defer r.deinit(allocator);
+
+            var buf: [512]u8 = undefined;
+            var stdout_writer = std.Io.File.stdout().writer(io, &buf);
+            stdout_writer.interface.print(
+                "peephole-report: {s}\n  ldxb total: {d}\n  8-byte-load clusters: {d}\n  est. insn savings (V2 upper bound): {d}\n",
+                .{
+                    report.input_path,
+                    r.ldxb_total,
+                    r.groups.len,
+                    r.insnSavingsEstimate(),
+                },
+            ) catch return .write_error;
+            for (r.groups) |g| {
+                stdout_writer.interface.print(
+                    "  - r{d} + 0x{x}..0x{x}  (nodes {d}..{d})\n",
+                    .{
+                        g.base_reg,
+                        @as(u16, @bitCast(g.base_offset)),
+                        @as(u16, @bitCast(g.base_offset)) + 7,
+                        g.first_idx,
+                        g.last_idx,
+                    },
+                ) catch return .write_error;
+            }
+            stdout_writer.flush() catch return .write_error;
             return .ok;
         },
     }
@@ -180,6 +230,20 @@ test "parseArgv rejects invalid arity" {
     const args = [_][]const u8{
         "elf2sbpf",
     };
+    try std.testing.expectError(UsageError.InvalidArgs, parseArgv(&args));
+}
+
+test "parseArgv parses --peephole-report mode with single positional" {
+    const args = [_][]const u8{ "elf2sbpf", "--peephole-report", "in.o" };
+    const parsed = try parseArgv(&args);
+    switch (parsed) {
+        .report => |r| try std.testing.expectEqualStrings("in.o", r.input_path),
+        else => return error.UnexpectedTestResult,
+    }
+}
+
+test "parseArgv rejects --peephole-report with two positionals" {
+    const args = [_][]const u8{ "elf2sbpf", "--peephole-report", "in.o", "out.so" };
     try std.testing.expectError(UsageError.InvalidArgs, parseArgv(&args));
 }
 

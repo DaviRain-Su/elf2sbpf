@@ -2973,6 +2973,115 @@ Release artifact 已发。
 
 每个平台有不同受众，文案需调整。等用户决定优先级。
 
+---
+
+## D.7.10 V1 — Unaligned u64 load detector ✅
+
+**日期**：2026-04-18
+**状态**：✅ 完成（detector only；V2 rewriter 未排期）
+
+### 触发原因
+
+用户在 `solana-program-rosetta` 跑 CU benchmark 发现：
+
+| program | solana-zig | stock-zig+elf2sbpf | gap |
+|---------|-----------|---------------------|-----|
+| Transfer-Lamports | 37 CU | 60 CU | +62% |
+| Pubkey compare | 15 CU | **187 CU** | **12.5×** |
+
+### 根因（不是 elf2sbpf 的 bug）
+
+两条管道用的 LLVM 不一样：
+
+- **solana-zig**（快）：`joncinque/solana-zig-bootstrap v1.52.0` +
+  `.cpu_arch = .sbf` 直接出 `.so`；Solana LLVM fork 允许 unaligned
+  i64 load，`load i64 align 1` → 单条 `ldxdw`
+- **stock-zig+elf2sbpf**（慢）：stock Zig 0.16 + `.cpu_arch = .bpfel`
+  `-mcpu=v2`；vanilla LLVM 保守把 `load i64 align 1` 拆成 **8 × ldxb
+  + 13 × shift/or = 22 条指令**
+
+`pubkey.o` 反汇编实证了 pattern：offset 0-67 有 8 组 22 insn 载入
+`id` 和 `owner_id` 两个 PublicKey。
+
+### 为什么 elf2sbpf 能救
+
+我们只能在 `.o` 后（codegen 完成后）工作，但 pattern 是可识别的：
+8 个 ldxb 同 base、连续 offsets、共同 shift/or 链、汇入单个 reg。
+识别后可以重写成单条 ldxdw，回收大部分 CU。
+
+### V1 Scope（本次）
+
+只做 detector + 报告，**不改任何字节码**。目的是：
+1. 确认 pattern 识别算法在真实程序上正确
+2. 给出 V2 的 CU 收益上限
+3. 为 V2 rewriter 打基础（复用 detector）
+
+### 做的事
+
+**1. `src/ast/peephole.zig` 新模块（281 行）**
+- `Ldxb8Group` 结构：base_reg + base_offset + 8 个 node_idx +
+  first/last_idx
+- `Report` 结构：groups 列表 + ldxb_total + `insnSavingsEstimate`
+  （`groups.len * 21`，保守下界）
+- `scan(allocator, nodes) → !Report`：
+  - 遍历 nodes 取所有 Ldxb（带 src reg + offset）
+  - 按 (base, offset, node_idx) 排序
+  - 滑动窗口找连续 8 个 offset = [N..N+7]
+  - **locality guard**：`last_idx - first_idx > 40` 的 scatter 匹配
+    被拒绝（防 cross-basic-block 误匹配）
+- 6 个单元测试：single cluster / back-to-back clusters / gap拒绝 /
+  不同 base 不合并 / 交织 shift/or 容忍 / locality guard
+
+**2. `src/lib.zig` 公开 API**
+- `pub fn peepholeReport(allocator, elf_bytes) !Report`：
+  byteParse → AST.fromByteParse → scan，不做 buildProgram（detector
+  不需要 Phase A-G 的 label 解析）
+
+**3. `src/main.zig` CLI**
+- 新增 `--peephole-report <input.o>` 模式
+- `ParsedArgs.report` variant；report 模式只接受单 positional
+- 输出格式：
+  ```
+  peephole-report: path
+    ldxb total: N
+    8-byte-load clusters: M
+    est. insn savings (V2 upper bound): K
+    - r{base} + 0x{lo}..0x{hi}  (nodes X..Y)
+  ```
+- 2 个新 CLI 测试（`--peephole-report` 成功路径 + 两个 positional
+  的拒绝）
+
+### 实测结果
+
+| 文件 | ldxb | clusters | est. savings | gap 实测 |
+|------|------|----------|--------------|---------|
+| pubkey.o（stock-zig）| 64 | **8** | **168** | 172 CU |
+| transfer-lamports.o（stock-zig）| 9 | 1 | 21 | 23 CU |
+| hello.o（solana-zig）| 0 | 0 | 0 | — |
+| noop.o / logonly.o | 0 | 0 | 0 | — |
+| vault.o（ReleaseSmall）| 117 | 7 | 147 | — |
+
+**关键发现**：
+- detector 估算跟实测 CU gap 精度 >95%（168/172，21/23）
+- solana-zig 的 `-ReleaseSmall` 也不是所有 u64 load 都 inline
+  （vault 7 clusters），V2 不仅能救 stock-zig 用户，还能进一步压
+  ReleaseSmall 产物
+- 全部 392 tests 通过（+4 新测试，原 388）
+
+### V2 rewriter 不在本次 scope
+
+删除指令会改变所有后续 offset，需要同步修：jump.off / call.imm /
+rel.dyn.r_offset / dynsym.st_value / V3 e_entry + section sh_addr。
+加上 register liveness + shift/or 链完整性 + cross-pattern 交织处
+理，估计 3-5 天 + 大量测试。计划作为 opt-in flag（`--peephole`），
+现有 19 goldens 走默认路径保留字节对等。
+
+完整 V2 plan 见 `docs/D-tasks.md §D.7.10`。
+
+### 规格修订
+
+无。V1 是全新增量，不改现有 API / 格式。
+
 
 
 
