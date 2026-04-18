@@ -111,4 +111,37 @@ _按 phase 顺序追加；每条格式：`[P{N}] severity · 位置 · 描述 ·
 
 **Phase 4 小结**：发现 1 个 medium-severity bug（恶意 ELF 可能触发 usize 溢出绕过边界检查 → panic/UB）—— 4 个检查点全部改成 overflow-safe，加了一条回归测试。没有其他健壮性问题。378/378 tests 全绿。
 
+### Phase 5 findings（2026-04-18 第 5 轮）
+
+| # | severity | 位置 | 描述 | 行动 |
+|---|----------|------|------|------|
+| 5.1 | low | Linux release 二进制 | v0.1-v0.5 历次 release 的 Linux 二进制 ~4.8 MB，没剥 debug info | ✅ `build.zig` 加 `-Dstrip` bool 选项（默认 null = 保留，release 传 true）。实测：Linux x86_64 4.8 MB → 516 KB（9× 减小）；macOS 635 KB → 387 KB；Linux arm64 ~4.4 MB → 392 KB |
+| 5.2 | medium | Release artifact 手工构建 | v0.1-v0.5 的发布流程：手工 `zig build -Dtarget=...` 3 次，tar，`shasum`，`gh release create`。脆弱、易遗漏、要求 macOS 本地环境 | ✅ 新增 `.github/workflows/release.yml`：tag push (`v*.*.*`) 触发，ubuntu-latest 一个 job 交叉编译到 3 target，算 SHA256SUMS，`gh release upload --clobber` 推上。自动 + 幂等 |
+| 5.3 | good | `zig fetch --save` UX | phase 2 已把 `library.md` 里 pin 到 v0.5.0；workflow 自动产出带 checksum 的 tag release；消费者 fetch 前可 verify | 无需行动 |
+
+**Phase 5 小结**：2 个 packaging 改进。新 release workflow 对未来的 v0.6+ 发布：tag push 即自动出 artifact，消除了"必须在 macOS 本地手工构建"的瓶颈。Release 二进制体积平均减小 ~60%，Linux 最甚达 9×。
+
+---
+
+## 审查总结（2026-04-18 完成）
+
+5 个 phase 走完。**主要改动**：
+
+| Phase | 发现 | 修/调整 |
+|-------|------|---------|
+| 1 code hygiene | 3 stale 注释 + 3 fmt 漂 | 全部修；flag phase 5 加 fmt 到 CI |
+| 2 docs | 4 处状态漂移 + 1 forwarder 文件 | 同步 v0.5.0；Zh/En parity；删 README.en.md |
+| 3 tests + CI | 格式漂可再来 + V3 无 smoke + 3 entry point 缺 error-path 测 | CI 加 `zig fmt --check` + V3 smoke；+3 tests (376→378 across 2 modules) |
+| 4 robustness | **1 medium-sev**：恶意 ELF 可触发 usize 溢出 → panic/UB | 4 个 bounds check 全部 overflow-safe；加 regression test |
+| 5 packaging | 无 strip + 全手工 release | build.zig `-Dstrip` option；release workflow 自动化 |
+
+**全仓质量信号**：378/378 tests；CI 双平台绿；零 panic/unreachable/ptrCast；10 V0 goldens + 9 V3 goldens byte-identical to oracle；fuzz-lite 160/160；两份 README / CHANGELOG 中英双语；5 个 ADR 覆盖重要决策。
+
+**未处理**（有意识 deferred）：
+- D.5 Windows（等用户报需求）
+- D.6 跨语言前端（战略愿景，按需）
+- blueshift-gg/sbpf issue（用户决定不开）
+- `reference-shim/` 留在 main（ADR-002）
+
+v0.5.0 算一个真正 stable 的 pre-1.0 release。下一步要么等 v0.6 触发（V3 on zignocchio / Windows 请求 / litesvm 集成 / 其它），要么基于 D.5 Windows 探索做个轻量前瞻。
 

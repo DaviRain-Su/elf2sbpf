@@ -15,6 +15,14 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // `-Dstrip=true` removes debug info from the CLI binary. Release
+    // builds set this; dev builds leave debug info in for stack traces.
+    const strip = b.option(
+        bool,
+        "strip",
+        "Strip debug info from the CLI binary (release-only; default: null = preserve)",
+    );
+
     // Library module — re-exported so future Zig projects can @import("elf2sbpf").
     const lib_mod = b.addModule("elf2sbpf", .{
         .root_source_file = b.path("src/lib.zig"),
@@ -30,6 +38,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip,
             .imports = &.{
                 .{ .name = "elf2sbpf", .module = lib_mod },
             },

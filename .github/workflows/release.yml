@@ -1,0 +1,85 @@
+name: Release
+
+# Build + upload release artifacts when a v*.*.* tag is pushed.
+# Runs end-to-end on a single ubuntu-latest host because Zig cross-compiles
+# cleanly to every target we ship, no native macOS runner needed.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build (e.g. v0.5.0)'
+        required: true
+
+jobs:
+  build:
+    name: Build artifacts for ${{ github.ref_name || inputs.tag }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed by gh release upload
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Zig 0.16.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Determine version tag
+        id: version
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Sanity — tests + fmt
+        run: |
+          zig fmt --check src build.zig
+          zig build test --summary all
+
+      - name: Build three artifacts (ReleaseSafe, stripped)
+        run: |
+          mkdir -p dist
+          version="${{ steps.version.outputs.version }}"
+
+          # Zig cross-compiles from ubuntu-latest to all three targets.
+          # Explicit -Dtarget for every output — no "native" special case
+          # so the label always matches the binary.
+          for pair in \
+            "aarch64-macos-none::aarch64-macos" \
+            "x86_64-linux-gnu::x86_64-linux" \
+            "aarch64-linux-gnu::aarch64-linux"
+          do
+            zig_target="${pair%%::*}"
+            suffix="${pair##*::}"
+
+            zig build -Doptimize=ReleaseSafe -Dstrip=true -Dtarget="$zig_target"
+
+            archive="elf2sbpf-v${version}-${suffix}.tar.gz"
+            cp zig-out/bin/elf2sbpf dist/elf2sbpf
+            (cd dist && tar czf "$archive" elf2sbpf && rm elf2sbpf)
+            ls -la "dist/$archive"
+          done
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          # gh release upload --clobber replaces any same-named assets; safe
+          # if the release was cut manually first (historical v0.1-v0.5 case).
+          gh release upload "$tag" dist/*.tar.gz dist/SHA256SUMS \
+            --clobber --repo "${{ github.repository }}"
