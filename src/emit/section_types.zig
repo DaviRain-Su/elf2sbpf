@@ -310,6 +310,327 @@ pub const DataSection = struct {
 };
 
 // ---------------------------------------------------------------------------
+// DynSymSection — dynamic symbol table (.dynsym), 24 bytes per entry.
+// ---------------------------------------------------------------------------
+
+/// STB_GLOBAL | STT_NOTYPE — the info byte Rust uses for every entry
+/// in `bytecode_v0` at sbpf-assembler::program.rs.
+pub const STB_GLOBAL_STT_NOTYPE: u8 = (1 << 4) | 0;
+
+/// One entry in the .dynsym table. Fixed 24 bytes per ELF64 spec.
+pub const DynSymEntry = struct {
+    /// Index into .dynstr of this symbol's name. Entry 0 is STN_UNDEF
+    /// with name=0 (empty string at dynstr offset 0).
+    name: u32,
+    info: u8 = STB_GLOBAL_STT_NOTYPE,
+    other: u8 = 0,
+    /// Section index — 0 for UND (syscalls are undefined), 1 for
+    /// entrypoints defined in .text.
+    shndx: u16,
+    value: u64,
+    size: u64 = 0,
+
+    pub fn bytecode(self: DynSymEntry, out: *[24]u8) void {
+        std.mem.writeInt(u32, out[0..4], self.name, .little);
+        out[4] = self.info;
+        out[5] = self.other;
+        std.mem.writeInt(u16, out[6..8], self.shndx, .little);
+        std.mem.writeInt(u64, out[8..16], self.value, .little);
+        std.mem.writeInt(u64, out[16..24], self.size, .little);
+    }
+};
+
+pub const DynSymSection = struct {
+    name_offset: u32,
+    /// Borrowed slice of entries. Entry 0 is always STN_UNDEF; callers
+    /// that accept DynSymSection must include it themselves.
+    entries: []const DynSymEntry,
+    /// Byte offset of this section in the output file.
+    offset: u64 = 0,
+    /// sh_link — points at .dynstr's section index.
+    link: u32 = 0,
+
+    pub fn name(self: DynSymSection) []const u8 {
+        _ = self;
+        return ".dynsym";
+    }
+
+    pub fn setOffset(self: *DynSymSection, o: u64) void {
+        self.offset = o;
+    }
+
+    pub fn setLink(self: *DynSymSection, l: u32) void {
+        self.link = l;
+    }
+
+    pub fn size(self: DynSymSection) u64 {
+        return @as(u64, self.entries.len) * 24;
+    }
+
+    pub fn bytecode(self: DynSymSection, allocator: std.mem.Allocator) ![]u8 {
+        const sz: usize = @intCast(self.size());
+        const buf = try allocator.alloc(u8, sz);
+        errdefer allocator.free(buf);
+        for (self.entries, 0..) |e, idx| {
+            e.bytecode(buf[idx * 24 ..][0..24]);
+        }
+        return buf;
+    }
+
+    pub fn sectionHeaderBytecode(self: DynSymSection, out: *[64]u8) void {
+        const sh = SectionHeader.init(
+            self.name_offset,
+            header_mod.SHT_DYNSYM,
+            header_mod.SHF_ALLOC,
+            self.offset,
+            self.offset,
+            self.size(),
+            self.link,
+            1, // sh_info = first non-local symbol index (all ours are global → 1)
+            8,
+            24,
+        );
+        sh.bytecode(out);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// DynStrSection — dynamic symbol name string table.
+// ---------------------------------------------------------------------------
+
+/// The string table used by .dynsym. Layout:
+///   [0]                = 0  (empty string for STN_UNDEF)
+///   [offset1..]        = name1 \0
+///   [offset2..]        = name2 \0
+///   ...                 padded to 8-byte boundary
+pub const DynStrSection = struct {
+    name_offset: u32,
+    symbol_names: []const []const u8,
+    offset: u64 = 0,
+
+    pub fn name(self: DynStrSection) []const u8 {
+        _ = self;
+        return ".dynstr";
+    }
+
+    pub fn setOffset(self: *DynStrSection, o: u64) void {
+        self.offset = o;
+    }
+
+    /// Padded size in bytes (Rust returns the padded size here, unlike
+    /// ShStrTabSection's unpadded convention).
+    pub fn size(self: DynStrSection) u64 {
+        var total: u64 = 1; // leading null
+        for (self.symbol_names) |n| total += n.len + 1;
+        total = (total + 7) & ~@as(u64, 7);
+        return total;
+    }
+
+    pub fn bytecode(self: DynStrSection, allocator: std.mem.Allocator) ![]u8 {
+        var list: std.ArrayList(u8) = .empty;
+        errdefer list.deinit(allocator);
+        try list.append(allocator, 0);
+        for (self.symbol_names) |n| {
+            try list.appendSlice(allocator, n);
+            try list.append(allocator, 0);
+        }
+        while (list.items.len % 8 != 0) {
+            try list.append(allocator, 0);
+        }
+        return list.toOwnedSlice(allocator);
+    }
+
+    pub fn sectionHeaderBytecode(self: DynStrSection, out: *[64]u8) void {
+        const sh = SectionHeader.init(
+            self.name_offset,
+            header_mod.SHT_STRTAB,
+            header_mod.SHF_ALLOC,
+            self.offset,
+            self.offset,
+            self.size(),
+            0,
+            0,
+            1,
+            0,
+        );
+        sh.bytecode(out);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// RelDynSection — dynamic relocation table (.rel.dyn). 16 bytes per entry.
+// ---------------------------------------------------------------------------
+
+/// Constants from the Rust `RelocationType` enum.
+pub const R_SBF_64_RELATIVE: u64 = 0x08;
+pub const R_SBF_SYSCALL: u64 = 0x0a;
+
+/// One .rel.dyn entry: 16 bytes. ELF Rel format:
+///   r_offset (u64) | r_info (u64)
+/// r_info encodes (symbol_index << 32) | r_type, but for Solana we
+/// actually store dynstr_offset in the high 32 bits (Rust puts it
+/// there directly). See sbpf-assembler::dynsym::RelDyn.bytecode.
+pub const RelDynEntry = struct {
+    offset: u64,
+    rel_type: u64,
+    dynstr_offset: u64,
+
+    pub fn bytecode(self: RelDynEntry, out: *[16]u8) void {
+        std.mem.writeInt(u64, out[0..8], self.offset, .little);
+        // r_info = (dynstr_offset << 32) | rel_type
+        const r_info = (self.dynstr_offset << 32) | self.rel_type;
+        std.mem.writeInt(u64, out[8..16], r_info, .little);
+    }
+};
+
+pub const RelDynSection = struct {
+    name_offset: u32,
+    entries: []const RelDynEntry,
+    offset: u64 = 0,
+    link: u32 = 0,
+
+    pub fn name(self: RelDynSection) []const u8 {
+        _ = self;
+        return ".rel.dyn";
+    }
+
+    pub fn setOffset(self: *RelDynSection, o: u64) void {
+        self.offset = o;
+    }
+
+    pub fn setLink(self: *RelDynSection, l: u32) void {
+        self.link = l;
+    }
+
+    pub fn size(self: RelDynSection) u64 {
+        return @as(u64, self.entries.len) * 16;
+    }
+
+    pub fn bytecode(self: RelDynSection, allocator: std.mem.Allocator) ![]u8 {
+        const sz: usize = @intCast(self.size());
+        const buf = try allocator.alloc(u8, sz);
+        errdefer allocator.free(buf);
+        for (self.entries, 0..) |e, idx| {
+            e.bytecode(buf[idx * 16 ..][0..16]);
+        }
+        return buf;
+    }
+
+    pub fn sectionHeaderBytecode(self: RelDynSection, out: *[64]u8) void {
+        const sh = SectionHeader.init(
+            self.name_offset,
+            header_mod.SHT_REL,
+            header_mod.SHF_ALLOC,
+            self.offset,
+            self.offset,
+            self.size(),
+            self.link,
+            0,
+            8,
+            16,
+        );
+        sh.bytecode(out);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// DynamicSection — the .dynamic table pointing at the other dyn sections.
+// ---------------------------------------------------------------------------
+
+/// Dynamic tag constants from the ELF spec.
+pub const DT_NULL: u64 = 0x00;
+pub const DT_STRTAB: u64 = 0x05;
+pub const DT_SYMTAB: u64 = 0x06;
+pub const DT_STRSZ: u64 = 0x0a;
+pub const DT_SYMENT: u64 = 0x0b;
+pub const DT_REL: u64 = 0x11;
+pub const DT_RELSZ: u64 = 0x12;
+pub const DT_RELENT: u64 = 0x13;
+pub const DT_TEXTREL: u64 = 0x16;
+pub const DT_FLAGS: u64 = 0x1e;
+pub const DT_RELCOUNT: u64 = 0x6fff_fffa;
+
+pub const DF_TEXTREL: u64 = 0x04;
+
+pub const DynamicSection = struct {
+    name_offset: u32,
+    offset: u64 = 0,
+    /// sh_link → .dynstr section index.
+    link: u32 = 0,
+    rel_offset: u64 = 0,
+    rel_size: u64 = 0,
+    rel_count: u64 = 0,
+    dynsym_offset: u64 = 0,
+    dynstr_offset: u64 = 0,
+    dynstr_size: u64 = 0,
+
+    pub fn name(self: DynamicSection) []const u8 {
+        _ = self;
+        return ".dynamic";
+    }
+
+    pub fn setOffset(self: *DynamicSection, o: u64) void {
+        self.offset = o;
+    }
+
+    pub fn setLink(self: *DynamicSection, l: u32) void {
+        self.link = l;
+    }
+
+    /// 10 or 11 tags × 16 bytes. RELCOUNT is omitted when rel_count=0.
+    pub fn size(self: DynamicSection) u64 {
+        return if (self.rel_count > 0) 11 * 16 else 10 * 16;
+    }
+
+    pub fn bytecode(self: DynamicSection, allocator: std.mem.Allocator) ![]u8 {
+        const sz: usize = @intCast(self.size());
+        const buf = try allocator.alloc(u8, sz);
+        errdefer allocator.free(buf);
+
+        var cursor: usize = 0;
+        const writeTag = struct {
+            fn go(dst: []u8, cur: *usize, tag: u64, val: u64) void {
+                std.mem.writeInt(u64, dst[cur.* .. cur.* + 8][0..8], tag, .little);
+                std.mem.writeInt(u64, dst[cur.* + 8 .. cur.* + 16][0..8], val, .little);
+                cur.* += 16;
+            }
+        }.go;
+
+        writeTag(buf, &cursor, DT_FLAGS, DF_TEXTREL);
+        writeTag(buf, &cursor, DT_REL, self.rel_offset);
+        writeTag(buf, &cursor, DT_RELSZ, self.rel_size);
+        writeTag(buf, &cursor, DT_RELENT, 0x10);
+        if (self.rel_count > 0) {
+            writeTag(buf, &cursor, DT_RELCOUNT, self.rel_count);
+        }
+        writeTag(buf, &cursor, DT_SYMTAB, self.dynsym_offset);
+        writeTag(buf, &cursor, DT_SYMENT, 0x18);
+        writeTag(buf, &cursor, DT_STRTAB, self.dynstr_offset);
+        writeTag(buf, &cursor, DT_STRSZ, self.dynstr_size);
+        writeTag(buf, &cursor, DT_TEXTREL, 0);
+        writeTag(buf, &cursor, DT_NULL, 0);
+
+        return buf;
+    }
+
+    pub fn sectionHeaderBytecode(self: DynamicSection, out: *[64]u8) void {
+        const sh = SectionHeader.init(
+            self.name_offset,
+            header_mod.SHT_DYNAMIC,
+            header_mod.SHF_ALLOC | header_mod.SHF_WRITE,
+            self.offset,
+            self.offset,
+            self.size(),
+            self.link,
+            0,
+            8,
+            16,
+        );
+        sh.bytecode(out);
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -405,7 +726,10 @@ test "ShStrTabSection: section header uses SHT_STRTAB with addralign=1" {
 test "CodeSection: emit a single exit instruction (8 bytes)" {
     const exit_inst = instruction_mod.Instruction{
         .opcode = .Exit,
-        .dst = null, .src = null, .off = null, .imm = null,
+        .dst = null,
+        .src = null,
+        .off = null,
+        .imm = null,
         .span = .{ .start = 0, .end = 8 },
     };
     const nodes = [_]ASTNode{
@@ -425,13 +749,18 @@ test "CodeSection: emit a single exit instruction (8 bytes)" {
 test "CodeSection: skips Label and GlobalDecl nodes, emits only Instructions" {
     const mov_inst = instruction_mod.Instruction{
         .opcode = .Mov64Imm,
-        .dst = .{ .n = 0 }, .src = null, .off = null,
+        .dst = .{ .n = 0 },
+        .src = null,
+        .off = null,
         .imm = .{ .right = .{ .Int = 42 } },
         .span = .{ .start = 0, .end = 8 },
     };
     const exit_inst = instruction_mod.Instruction{
         .opcode = .Exit,
-        .dst = null, .src = null, .off = null, .imm = null,
+        .dst = null,
+        .src = null,
+        .off = null,
+        .imm = null,
         .span = .{ .start = 0, .end = 8 },
     };
     const nodes = [_]ASTNode{
@@ -466,7 +795,7 @@ test "CodeSection: section header uses PROGBITS + ALLOC|EXECINSTR, align 4" {
     try testing.expectEqual(@as(u64, 0xe8), std.mem.readInt(u64, out[16..24], .little)); // sh_addr
     try testing.expectEqual(@as(u64, 0xe8), std.mem.readInt(u64, out[24..32], .little)); // sh_offset
     try testing.expectEqual(@as(u64, 0x40), std.mem.readInt(u64, out[32..40], .little)); // sh_size
-    try testing.expectEqual(@as(u64, 4), std.mem.readInt(u64, out[48..56], .little));   // sh_addralign
+    try testing.expectEqual(@as(u64, 4), std.mem.readInt(u64, out[48..56], .little)); // sh_addralign
 }
 
 test "DataSection: pads bytes to 8-byte boundary" {
@@ -520,4 +849,144 @@ test "DataSection: section header uses PROGBITS + ALLOC, unpadded sh_size" {
     try testing.expectEqual(header_mod.SHF_ALLOC, std.mem.readInt(u64, out[8..16], .little));
     try testing.expectEqual(@as(u64, 5), std.mem.readInt(u64, out[32..40], .little)); // unpadded
     try testing.expectEqual(@as(u64, 1), std.mem.readInt(u64, out[48..56], .little)); // align 1
+}
+
+test "DynSymEntry: 24-byte layout" {
+    const e = DynSymEntry{
+        .name = 1,
+        .shndx = 1,
+        .value = 0xe8,
+        .size = 0,
+    };
+    var out: [24]u8 = undefined;
+    e.bytecode(&out);
+
+    try testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, out[0..4], .little));
+    try testing.expectEqual(STB_GLOBAL_STT_NOTYPE, out[4]);
+    try testing.expectEqual(@as(u8, 0), out[5]);
+    try testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, out[6..8], .little));
+    try testing.expectEqual(@as(u64, 0xe8), std.mem.readInt(u64, out[8..16], .little));
+    try testing.expectEqual(@as(u64, 0), std.mem.readInt(u64, out[16..24], .little));
+}
+
+test "DynSymSection: 3 entries → 72 bytes + header fields" {
+    const entries = [_]DynSymEntry{
+        .{ .name = 0, .shndx = 0, .value = 0 }, // STN_UNDEF
+        .{ .name = 1, .shndx = 1, .value = 0xe8 }, // entrypoint
+        .{ .name = 12, .shndx = 0, .value = 0 }, // sol_log_
+    };
+    const sym = DynSymSection{
+        .name_offset = 0,
+        .entries = &entries,
+        .offset = 0x1f0,
+        .link = 5,
+    };
+
+    const bytes = try sym.bytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(usize, 72), bytes.len);
+    try testing.expectEqual(@as(u64, 72), sym.size());
+
+    // First entry is STN_UNDEF (name=0, shndx=0, value=0).
+    try testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, bytes[0..4], .little));
+
+    var hdr: [64]u8 = undefined;
+    sym.sectionHeaderBytecode(&hdr);
+    try testing.expectEqual(@as(u32, header_mod.SHT_DYNSYM), std.mem.readInt(u32, hdr[4..8], .little));
+    try testing.expectEqual(@as(u32, 5), std.mem.readInt(u32, hdr[40..44], .little)); // sh_link
+    try testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, hdr[44..48], .little)); // sh_info
+    try testing.expectEqual(@as(u64, 24), std.mem.readInt(u64, hdr[56..64], .little)); // entsize
+}
+
+test "DynStrSection: names + leading null, padded to 8" {
+    const names = [_][]const u8{ "entrypoint", "sol_log_" };
+    var ds = DynStrSection{
+        .name_offset = 0,
+        .symbol_names = &names,
+    };
+    ds.setOffset(0x238);
+
+    const bytes = try ds.bytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    // Layout:
+    //  [0]     = 0
+    //  [1..11] = "entrypoint"
+    //  [11]    = 0
+    //  [12..20] = "sol_log_"
+    //  [20]    = 0
+    //  Total 21 bytes → padded to 24.
+    try testing.expectEqual(@as(usize, 24), bytes.len);
+    try testing.expectEqual(@as(u64, 24), ds.size());
+    try testing.expectEqual(@as(u8, 0), bytes[0]);
+    try testing.expectEqualStrings("entrypoint", bytes[1..11]);
+    try testing.expectEqualStrings("sol_log_", bytes[12..20]);
+}
+
+test "RelDynEntry: packs r_info with (dynstr << 32) | rel_type" {
+    const e = RelDynEntry{
+        .offset = 0x110,
+        .rel_type = R_SBF_SYSCALL,
+        .dynstr_offset = 2,
+    };
+    var out: [16]u8 = undefined;
+    e.bytecode(&out);
+
+    try testing.expectEqual(@as(u64, 0x110), std.mem.readInt(u64, out[0..8], .little));
+    const r_info = std.mem.readInt(u64, out[8..16], .little);
+    try testing.expectEqual(@as(u64, (2 << 32) | R_SBF_SYSCALL), r_info);
+}
+
+test "DynamicSection: base size 160 (no RELCOUNT)" {
+    const dyn = DynamicSection{
+        .name_offset = 0,
+        .offset = 0x140,
+        .rel_offset = 0x250,
+        .rel_size = 32,
+        .rel_count = 0, // omits RELCOUNT tag
+        .dynsym_offset = 0x1f0,
+        .dynstr_offset = 0x238,
+        .dynstr_size = 24,
+    };
+
+    const bytes = try dyn.bytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    // 10 tags × 16 bytes = 160.
+    try testing.expectEqual(@as(usize, 160), bytes.len);
+
+    // First tag is DT_FLAGS = 0x1e, value = DF_TEXTREL = 0x04.
+    try testing.expectEqual(DT_FLAGS, std.mem.readInt(u64, bytes[0..8], .little));
+    try testing.expectEqual(DF_TEXTREL, std.mem.readInt(u64, bytes[8..16], .little));
+    // Second tag is DT_REL.
+    try testing.expectEqual(DT_REL, std.mem.readInt(u64, bytes[16..24], .little));
+    try testing.expectEqual(@as(u64, 0x250), std.mem.readInt(u64, bytes[24..32], .little));
+}
+
+test "DynamicSection: with rel_count adds DT_RELCOUNT (176 bytes)" {
+    const dyn = DynamicSection{
+        .name_offset = 0,
+        .rel_count = 1,
+    };
+    const bytes = try dyn.bytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+    try testing.expectEqual(@as(usize, 176), bytes.len);
+}
+
+test "DynamicSection: header uses SHT_DYNAMIC + ALLOC|WRITE" {
+    const dyn = DynamicSection{
+        .name_offset = 3,
+        .offset = 0x140,
+        .link = 5,
+    };
+    var out: [64]u8 = undefined;
+    dyn.sectionHeaderBytecode(&out);
+    try testing.expectEqual(@as(u32, header_mod.SHT_DYNAMIC), std.mem.readInt(u32, out[4..8], .little));
+    try testing.expectEqual(
+        header_mod.SHF_ALLOC | header_mod.SHF_WRITE,
+        std.mem.readInt(u64, out[8..16], .little),
+    );
+    try testing.expectEqual(@as(u32, 5), std.mem.readInt(u32, out[40..44], .little));
+    try testing.expectEqual(@as(u64, 16), std.mem.readInt(u64, out[56..64], .little));
 }

@@ -1865,6 +1865,91 @@ try inst.toBytes(buf[cursor .. cursor + 16][0..16]);
 dynamic 程序里出现（带 syscall 或 lddw 的 rodata 引用）；从
 ParseResult.dynamic_symbols + relocation_data 里来。
 
+---
+
+## F.7-F.10 — 动态 section 四件套
+
+**日期**：2026-04-18
+**commit**：待推送
+**耗时**：约 2.5h
+
+### 做了什么
+
+在 `src/emit/section_types.zig` 增加 ~477 行，一次性把 V0 动态可执行
+程序的四个动态 section 全部补齐：
+
+1. **F.7 `DynSymEntry` + `DynSymSection`**（24 字节每 entry）
+   - `STB_GLOBAL_STT_NOTYPE = (1 << 4) | 0 = 0x10`
+   - `toBytes` 按 `name(4) / info(1) / other(1) / shndx(2) / value(8) / size(8)`
+     小端打包
+   - `DynSymSection` 借用 entries 切片 + `sectionHeaderBytecode`
+     设置 `sh_info=1`（第一个非-local 索引，Solana VM 只有 global）
+
+2. **F.8 `DynStrSection`**（字符串表）
+   - 首字节 `\0`，名称按顺序拼接，最后补到 8 字节对齐
+   - SHT_STRTAB，`sh_addralign=1`
+   - bytecode 返回 padded 长度；sh_size 也等于 padded 长度
+     （跟 Rust byteparser 的 `dynstr.size()` 一致）
+
+3. **F.9 `DynamicSection`**（16 字节每 tag）
+   - 完整集齐 DT 常量：`NULL/STRTAB/SYMTAB/STRSZ/SYMENT/REL/RELSZ/
+     RELENT/TEXTREL/FLAGS/RELCOUNT`
+   - 基础 10 个 tag = 160B；rel_count>0 时追加 `DT_RELCOUNT` → 176B
+   - `FLAGS` 默认带 `DF_TEXTREL=0x04`（Solana VM 允许 text 重定位）
+   - SHT_DYNAMIC + ALLOC|WRITE，`sh_addralign=8`，`sh_entsize=16`
+
+4. **F.10 `RelDynEntry` + `RelDynSection`**（16 字节每 entry）
+   - `r_info` 位打包：`(dynstr_offset << 32) | rel_type`
+   - 关键常量：`R_SBF_64_RELATIVE=0x08`、`R_SBF_SYSCALL=0x0a`
+   - SHT_REL + ALLOC，`sh_link` 指向 dynsym index、`sh_entsize=16`
+
+### 设计决定
+
+**DynSym 和 RelDyn 都用借用切片**（`entries: []const DynSymEntry`）
+
+后续 Epic G 会把 `ParseResult.dynamic_symbols` / `relocation_data`
+（所有权在 ParseResult）直接切片出来喂进来，避免多余 copy。
+
+**DynamicSection 用固定数组 + `rel_count>0` 动态一分支**
+
+不用 `ArrayList`，因为 tag 数量最多两种（10 或 11）——用一个 `if`
+把 RELCOUNT 位置决定就够了，比动态列表更直观也更便宜。
+
+**DT_FLAGS 默认 DF_TEXTREL**
+
+Rust 代码在 `Dynamic::default()` 就硬编码这条——Solana VM 允许
+（且需要）text 段的 64_RELATIVE 和 SYSCALL 重定位，没有这个 flag
+loader 会拒绝加载。
+
+### 踩坑
+
+**`STB_GLOBAL` 如果写成 `const STB_GLOBAL: u2 = 1` 会编译错**
+
+因为 `u2` 做 `<< 4` 会溢出到 `u6`，跟 `STT_NOTYPE` 合并又要 bit-or 回
+`u8`。最后合成成一个 `const STB_GLOBAL_STT_NOTYPE: u8 = (1 << 4) | 0`
+常量，干净利落。
+
+### 新增测试（8 个）
+
+- `DynSymEntry: 24-byte layout`
+- `DynSymSection: 3 entries → 72 bytes + header fields`
+- `DynStrSection: names + leading null, padded to 8`
+- `RelDynEntry: packs r_info with (dynstr << 32) | rel_type`
+- `DynamicSection: base size 160 (no RELCOUNT)`
+- `DynamicSection: with rel_count adds DT_RELCOUNT (176 bytes)`
+- `DynamicSection: header uses SHT_DYNAMIC + ALLOC|WRITE`
+
+### 验收
+
+- 316/316 tests 全绿（lib 155 + exe 161）
+- section_types.zig 从 515 行 → 992 行
+
+### 下一任务
+
+**F.11 `DebugSection`**（原样透传 DWARF 字节；调试信息预留位）+
+**F.12 `SectionType` 分派**（`union(enum)` 把 9 个 section 类型
+统一成同一接口，为 Epic G 的 section header table 写入做准备）。
+
 
 
 

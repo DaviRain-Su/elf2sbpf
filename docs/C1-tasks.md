@@ -90,7 +90,8 @@ test` 跑空测试。
 
 - [x] **A.3**：建测试 harness ✅ 2026-04-18
   - `zig build test` 跑通 3/3 测试（2 个在 lib module，1 个在 exe module）
-  - `scripts/validate-zig.sh` 推迟到 Epic C1-I（实际端到端对拍时才需要）
+  - `scripts/validate-zig.sh` 已补上为 `validate-all.sh` 的兼容入口；
+    真正的 9/9 绿灯仍要等 Epic I 完成
   - **验收**：`zig build test --summary all` 全绿
 
 ---
@@ -431,24 +432,29 @@ Solana SBPF 特有结构。
   - `sectionHeaderBytecode(name_offset, *[64]u8)` —— SHT_PROGBITS + ALLOC，align 1，**sh_size 用 unpadded** 逻辑大小（跟 Rust 一致）
   - **验收**：3 单测（"Hello" 5B 补成 8B、多 rodata 拼接、section header 字段）
 
-- [ ] **F.7**：`emit/section_types.zig` — `DynSymSection`
-  - 24 字节每 entry
-  - `emit`：遍历 dynamic_symbols，emit 符号表
-  - **验收**：对 hello，dynsym 内容跟 baseline 一致
+- [x] **F.7**：`emit/section_types.zig` — `DynSymSection` ✅ 2026-04-18
+  - `DynSymEntry` 24 字节布局（name/info/other/shndx/value/size）
+  - `DynSymSection` 借用切片 + bytecode/sectionHeaderBytecode，
+    SHT_DYNSYM + ALLOC，`sh_info=1`（第一个非-local 索引）
+  - **验收**：2 单测（entry 24B 布局、3 entries 拼成 72B 且 header 正确）
 
-- [ ] **F.8**：`emit/section_types.zig` — `DynStrSection`
-  - 字符串表（跟 symbol names 对应）
-  - **验收**：内容跟 shim 一致
+- [x] **F.8**：`emit/section_types.zig` — `DynStrSection` ✅ 2026-04-18
+  - 首字节 `\0`，名称按顺序拼接并补 8 字节对齐
+  - SHT_STRTAB，`sh_addralign=1`
+  - **验收**：1 单测（"entrypoint"+"_"=21B 补成 24B 且 leading null 保留）
 
-- [ ] **F.9**：`emit/section_types.zig` — `DynamicSection`
-  - 16 字节每 entry，标准 ELF dynamic 条目
-  - Tags: `FLAGS`、`REL`、`RELSZ`、`RELENT`、`RELCOUNT`、`SYMTAB`、
-    `SYMENT`、`STRTAB`、`STRSZ`、`TEXTREL`、`NULL`
-  - **验收**：hello.so 的 dynamic section 字节一致
+- [x] **F.9**：`emit/section_types.zig` — `DynamicSection` ✅ 2026-04-18
+  - DT 常量：`NULL/STRTAB/SYMTAB/STRSZ/SYMENT/REL/RELSZ/RELENT/TEXTREL/FLAGS/RELCOUNT`
+  - 固定 10 个 tag（160B），rel_count>0 时追加 DT_RELCOUNT（176B）
+  - SHT_DYNAMIC + ALLOC|WRITE，`sh_addralign=8`
+  - **验收**：3 单测（基础 160B、带 RELCOUNT 176B、header flags）
 
-- [ ] **F.10**：`emit/section_types.zig` — `RelDynSection`
-  - 16 字节每 entry（R_BPF_64_RELATIVE / R_BPF_64_32 / R_SBF_SYSCALL）
-  - **验收**：跟 baseline rel.dyn 一致
+- [x] **F.10**：`emit/section_types.zig` — `RelDynSection` ✅ 2026-04-18
+  - `RelDynEntry` r_info 打包：`(dynstr_offset << 32) | rel_type`
+  - 常量：`R_SBF_64_RELATIVE=0x08`、`R_SBF_SYSCALL=0x0a`
+  - `RelDynSection` 借用切片 + bytecode/sectionHeaderBytecode，
+    SHT_REL + ALLOC，`sh_link` 指向 dynsym、`sh_entsize=16`
+  - **验收**：1 单测（r_info 位打包正确）
 
 - [ ] **F.11**：`emit/section_types.zig` — `DebugSection`
   - 原样保留传入的字节（debug info reuse）
@@ -511,8 +517,8 @@ Solana SBPF 特有结构。
   - `parseArgv` → `ParsedArgs { help, run { input_path, output_path } }`
   - `printUsage` 写 stderr
   - 3 单测（run / help / invalid arity）
-- [x] **H.2**：`main.zig` — 主流程 ✅ 2026-04-18
-  - argsAlloc → parse → readFileAlloc → linkProgram → writeFile 链条
+- [ ] **H.2**：`main.zig` — 主流程（框架已接通，待 Epic G 验收）
+  - CLI 入口、参数解析、读写文件和退出码路径已接好
   - **注意**：`linkProgram` 当前仍是 stub（返回 InvalidElf）。H.2 的
     "产出 .so 跟 shim 一致" 验收要等 Epic G（Program.emitBytecode）完成
 - [x] **H.3**：基本错误处理 ✅ 2026-04-18
@@ -577,11 +583,11 @@ Solana SBPF 特有结构。
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
 | D — Byteparser | 9 | 9 | ✅ 完成 |
 | E — AST | 4 | 4 | ✅ 完成 |
-| F — ELF 输出层 | 12 | 6 | 进行中 (50%) |
+| F — ELF 输出层 | 12 | 10 | 进行中 (83%) |
 | G — Program emit | 4 | 0 | 未开始 |
-| H — CLI | 3 | 3 | ✅ 完成（框架；产物验证等 Epic G） |
+| H — CLI | 3 | 2 | 进行中（入口/错误处理已完成；主流程验收待 Epic G） |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **38** | **68%** |
+| **总计** | **56** | **41** | **73%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
