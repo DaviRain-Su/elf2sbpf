@@ -588,10 +588,15 @@ Solana SBPF 特有结构。
   - **验收**：`zig build test` 在 9/9 example 上**全绿**（362/362
     tests）
 
-- [ ] **I.4**：CI 脚本
-  - `.github/workflows/ci.yml` 或者 `Makefile`
-  - 跑：`zig build` + `zig build test` + `validate-all.sh`
-  - **验收**：一条命令跑完全部 C1 验收
+- [x] **I.4**：CI workflow ✅ 2026-04-18
+  - `.github/workflows/ci.yml`：ubuntu + macOS 矩阵
+  - 步骤：`mlugg/setup-zig@v2` (pin 0.16.0) →
+    `zig build` → `zig build test --summary all` → CLI 烟雾测试
+    (`elf2sbpf hello.o /tmp/out.so && cmp /tmp/out.so hello.shim.so`)
+  - 9/9 对拍已经在 `zig build test` 里（src/testdata/ goldens），
+    所以 CI 不用跑 `validate-zig.sh`（那个要 Rust + Zignocchio +
+    LLVM，对 CI 太重）
+  - Concurrency：同分支 push 自动 cancel 旧 run
 
 - [x] **I.5**：README 更新 ✅ 2026-04-18
   - 更新 status 到 "C1 MVP 已达成"
@@ -620,8 +625,8 @@ Solana SBPF 特有结构。
 | F — ELF 输出层 | 12 | 12 | ✅ 完成 |
 | G — Program emit | 4 | 4 | ✅ 完成 |
 | H — CLI | 3 | 3 | ✅ 完成 |
-| I — 对拍测试 | 6 | 4 | 进行中（9/9 已绿；golden 入库 + Zig 侧 loop 已接通；剩 CI / zignocchio 草稿） |
-| **总计** | **56** | **52** | **93%** |
+| I — 对拍测试 | 6 | 5 | 进行中（I.6 zignocchio build.zig 草稿是可选） |
+| **总计** | **56** | **53** | **95%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
