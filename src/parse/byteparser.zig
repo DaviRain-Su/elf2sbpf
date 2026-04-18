@@ -946,6 +946,14 @@ pub const RewriteError = error{
     LddwTargetOutsideRodata,
     /// A non-STT_SECTION call target symbol had an empty name.
     CallTargetUnresolvable,
+    /// Failed to iterate relocations for a relocation section selected
+    /// by section kind. This is treated as a hard parse failure instead
+    /// of being silently skipped.
+    RelocationIterFailed,
+    /// Failed to iterate symbols from the relocation-linked symbol table.
+    /// This is treated as a hard parse failure instead of being silently
+    /// skipped.
+    SymbolIterFailed,
     OutOfMemory,
 };
 
@@ -1040,7 +1048,7 @@ pub fn rewriteRelocations(
         };
         defer sym_lookup.deinit(allocator);
 
-        var rel_it = file.iterRelocations(rel_sec) catch continue;
+        var rel_it = file.iterRelocations(rel_sec) catch return RewriteError.RelocationIterFailed;
         while (rel_it.next()) |r| {
             // Resolve target symbol via O(1) lookup.
             if (r.symbol_index >= sym_lookup.items.len) continue;
@@ -1087,7 +1095,7 @@ pub fn rewriteRelocations(
                         };
                         const sym_sec = sym.sectionIndex() orelse continue;
 
-                        var named_iter = file.iterSymbolsAt(symtab_idx) catch continue;
+                        var named_iter = file.iterSymbolsAt(symtab_idx) catch return RewriteError.SymbolIterFailed;
                         var found: ?[]const u8 = null;
                         while (named_iter.next() catch null) |s| {
                             const s_sec = s.sectionIndex() orelse continue;
