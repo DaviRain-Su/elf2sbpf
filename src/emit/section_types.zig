@@ -660,28 +660,36 @@ pub const DebugSection = struct {
         self.offset = o;
     }
 
+    /// Size in bytes that `bytecode()` will emit — padded to 8-byte
+    /// alignment to match Rust DebugSection::size() (section.rs L663-667).
+    /// Used for file-offset tracking. Section header's `sh_size` records
+    /// the UNpadded data length (see `sectionHeaderBytecode`).
     pub fn size(self: DebugSection) u64 {
-        return self.data.len;
+        const raw = self.data.len;
+        return (raw + 7) & ~@as(usize, 7);
     }
 
-    /// Verbatim copy of the preserved bytes. No padding, no realignment —
-    /// debug sections stay exactly as the input compiler emitted them.
+    /// Copy of the preserved bytes padded with zeros up to an 8-byte
+    /// boundary. Matches Rust DebugSection::bytecode (section.rs L669-675).
     pub fn bytecode(self: DebugSection, allocator: std.mem.Allocator) ![]u8 {
-        const buf = try allocator.alloc(u8, self.data.len);
+        const padded = self.size();
+        const buf = try allocator.alloc(u8, @intCast(padded));
         errdefer allocator.free(buf);
-        @memcpy(buf, self.data);
+        @memcpy(buf[0..self.data.len], self.data);
+        @memset(buf[self.data.len..], 0);
         return buf;
     }
 
     pub fn sectionHeaderBytecode(self: DebugSection, out: *[64]u8) void {
-        // SHT_PROGBITS, no flags (not loadable), alignment 1.
+        // SHT_PROGBITS, no flags (not loadable), alignment 1. sh_size
+        // uses the unpadded data length (Rust section.rs L700).
         const sh = SectionHeader.init(
             self.name_offset,
             header_mod.SHT_PROGBITS,
             0,
             0,
             self.offset,
-            self.size(),
+            self.data.len,
             0,
             0,
             1,
@@ -1163,18 +1171,23 @@ test "DynamicSection: header uses SHT_DYNAMIC + ALLOC|WRITE" {
     try testing.expectEqual(@as(u64, 16), std.mem.readInt(u64, out[56..64], .little));
 }
 
-test "DebugSection: bytecode is a verbatim copy of the input" {
+test "DebugSection: bytecode is a zero-padded copy to 8-byte boundary" {
     const payload = [_]u8{ 0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03, 0x04 };
     const sec = DebugSection{
         .section_name = ".debug_info",
         .name_offset = 17,
         .data = &payload,
     };
-    try testing.expectEqual(@as(u64, 9), sec.size());
+    // 9 bytes of data → padded to 16 (next multiple of 8). sh_size
+    // still records 9 via `sectionHeaderBytecode`, but `size()` returns
+    // the emit-accurate 16 bytes for offset tracking.
+    try testing.expectEqual(@as(u64, 16), sec.size());
 
     const bytes = try sec.bytecode(testing.allocator);
     defer testing.allocator.free(bytes);
-    try testing.expectEqualSlices(u8, &payload, bytes);
+    try testing.expectEqual(@as(usize, 16), bytes.len);
+    try testing.expectEqualSlices(u8, &payload, bytes[0..9]);
+    for (bytes[9..]) |b| try testing.expectEqual(@as(u8, 0), b);
 }
 
 test "DebugSection: empty data yields zero-length section" {
@@ -1244,7 +1257,9 @@ test "SectionType: dispatches name/size through each variant" {
         .data = &debug_payload,
     } };
     try testing.expectEqualStrings(".debug_info", dbg.name());
-    try testing.expectEqual(@as(u64, 4), dbg.size());
+    // 4-byte payload → padded to 8 for emit (union dispatch returns
+    // bytecode-accurate size, matching Rust DebugSection::size()).
+    try testing.expectEqual(@as(u64, 8), dbg.size());
 }
 
 test "SectionType: setOffset propagates to the inner variant" {

@@ -153,11 +153,14 @@ fn runPipeline(allocator: std.mem.Allocator, elf_bytes: []const u8) ![]u8 {
     // buildProgram consumes ast.nodes/rodata_nodes; keep the AST handle
     // alive for the remaining (now-empty) list teardown.
 
-    // Empty, allocator-owned debug_sections — G.2 skips debug reuse so
-    // this is OK until the debug path lands.
-    const empty_debug = try allocator.alloc(lib.ast.DebugSection, 0);
+    // Convert ByteParseResult.debug → []ast.DebugSection (allocator-owned
+    // slice; ParseResult takes ownership after buildProgram consumes it).
+    const debug_slice = try allocator.alloc(lib.ast.DebugSection, bpr.debug.entries.items.len);
+    for (bpr.debug.entries.items, 0..) |e, i| {
+        debug_slice[i] = .{ .name = e.name, .data = e.data };
+    }
 
-    var parse_result = try ast.buildProgram(.V0, empty_debug);
+    var parse_result = try ast.buildProgram(.V0, debug_slice);
     // ParseResult owns the rest; ast itself is now empty.
     ast.deinit();
 
@@ -260,6 +263,16 @@ const goldens = [_]Golden{
         .name = "token-vault",
         .input = @embedFile("testdata/token-vault.o"),
         .shim_so = @embedFile("testdata/token-vault.shim.so"),
+    },
+    // D.2 fixture — a minimal BPF program built with `-g` to exercise the
+    // `.debug_loc/.debug_abbrev/.debug_info/.debug_str/.debug_line`
+    // preservation path. The 9 zignocchio examples use `-O ReleaseSmall`
+    // and have no DWARF sections, so this is the only byte-diff that
+    // covers the debug-reuse code path in Program.appendDebugSections.
+    .{
+        .name = "mini-debug",
+        .input = @embedFile("testdata/mini-debug.o"),
+        .shim_so = @embedFile("testdata/mini-debug.shim.so"),
     },
 };
 

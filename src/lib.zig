@@ -143,10 +143,15 @@ pub fn linkProgram(
         error.OutOfMemory => return LinkError.OutOfMemory,
     };
 
-    const empty_debug = allocator.alloc(ast.DebugSection, 0) catch
+    // Convert ByteParseResult.debug (DebugScan) → []ast.DebugSection.
+    // The slice is owned by ParseResult after buildProgram consumes it.
+    const debug_slice = allocator.alloc(ast.DebugSection, bpr.debug.entries.items.len) catch
         return LinkError.OutOfMemory;
+    for (bpr.debug.entries.items, 0..) |e, i| {
+        debug_slice[i] = .{ .name = e.name, .data = e.data };
+    }
 
-    var parse_result = ast_val.buildProgram(.V0, empty_debug) catch |e| switch (e) {
+    var parse_result = ast_val.buildProgram(.V0, debug_slice) catch |e| switch (e) {
         error.OutOfMemory => return LinkError.OutOfMemory,
         error.UndefinedLabel => return LinkError.UndefinedLabel,
     };

@@ -8,8 +8,39 @@ and [SemVer](https://semver.org/). Dates use the `YYYY-MM-DD` format.
 ## [Unreleased]
 
 - Pending feedback and follow-up work after the zignocchio PR lands.
-- D-stage items such as V3 and debug-info support will continue to be prioritized
-  based on ecosystem demand.
+- Further D-stage items (D.4 Zig library API, D.3 dynamic syscall registry,
+  D.1 V3 arch) prioritized based on ecosystem demand.
+
+## [0.2.0] — 2026-04-18
+
+D.2 — Debug info preservation.
+
+### Added
+
+- **`.debug_*` section pass-through**: elf2sbpf now preserves
+  `.debug_loc / .debug_abbrev / .debug_info / .debug_str / .debug_line`
+  etc. from the input `.o`, inserted between the last image section and
+  `.shstrtab`. Matches `reference-shim` output byte-for-byte.
+- **`Program.appendDebugSections` helper**: port of Rust
+  `sbpf-assembler::debug::reuse_debug_sections`. Invoked in all three
+  layout branches (V0 dynamic / V0 static / V3).
+- **Mini-debug test fixture** (`src/testdata/mini-debug.{c,o,shim.so}`):
+  a C program built with `zig cc -g` to exercise the debug-preservation
+  path. The 9 zignocchio examples use `-O ReleaseSmall` and have no
+  DWARF, so this is the only byte-diff that exercises the new code path
+  — now part of the `integration_test.zig` goldens loop (10/10 MATCH).
+
+### Changed
+
+- `DebugSection.size()` now returns the 8-byte-padded size (matches
+  Rust `section.rs` L663-667); `bytecode()` zero-pads the data to the
+  same boundary. `sectionHeaderBytecode` keeps the **unpadded** data
+  length in `sh_size`.
+
+### Known issues
+
+- No change to supported architectures or CLI surface; V3 / dynamic
+  syscall / Windows remain deferred per D-tasks.md
 
 ## [0.1.0] — 2026-04-18
 
@@ -78,5 +109,6 @@ Ported from [blueshift-gg/sbpf-linker](https://github.com/blueshift-gg/sbpf-link
 
 ---
 
-[Unreleased]: https://github.com/DaviRain-Su/elf2sbpf/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/DaviRain-Su/elf2sbpf/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.2.0
 [0.1.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.1.0

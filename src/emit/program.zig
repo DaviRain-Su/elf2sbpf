@@ -225,7 +225,7 @@ pub const Program = struct {
 
         // --- dispatch by arch flavor ---
         if (arch == .V3) {
-            try self.layoutV3(allocator, &current_offset, base_offset, bytecode_size, rodata_size, has_rodata);
+            try self.layoutV3(allocator, pr, &current_offset, base_offset, bytecode_size, rodata_size, has_rodata);
         } else if (!pr.prog_is_static) {
             try self.layoutV0Dynamic(
                 allocator,
@@ -256,18 +256,17 @@ pub const Program = struct {
     fn layoutV3(
         self: *Program,
         allocator: std.mem.Allocator,
+        pr: *const ParseResult,
         current_offset: *u64,
         base_offset: u64,
         bytecode_size: u64,
         rodata_size: u64,
         has_rodata: bool,
     ) !void {
-        // G.2 scope: skip debug section synthesis (uses the "reuse" path
-        // only when ParseResult carries them; G.2 handles the simple case
-        // without debug-data injection).
-        // NOTE: debug sections reuse is wired in fromParseResult callers'
-        //       ParseResult directly — G.2 punts on that until we have a
-        //       test fixture with real DWARF.
+        // D.2: reuse `.debug_*` sections between the code/data image and
+        // shstrtab. Port of Rust sbpf-assembler::debug::reuse_debug_sections
+        // (debug.rs L197-234). No-op if pr.debug_sections is empty.
+        try self.appendDebugSections(allocator, pr, current_offset);
 
         // shstrtab sits at the end.
         const shstrtab_name_offset = @as(u32, @intCast(shstrtabNameOffset(self.section_names.items)));
@@ -296,6 +295,37 @@ pub const Program = struct {
                 allocator,
                 ProgramHeader.newLoad(base_offset, bytecode_size, true, .V3),
             );
+        }
+    }
+
+    /// D.2: port of Rust `reuse_debug_sections` (debug.rs L197-234).
+    /// For each parsed debug section:
+    ///   - assign name_offset = 1 + Σ(section_names[i].len+1)
+    ///   - push its name into section_names (so future sections' name
+    ///     offsets are correct)
+    ///   - assign its file offset = current_offset
+    ///   - bump current_offset by its size
+    ///   - append as `SectionType.debug` to self.sections
+    ///
+    /// No-op if pr.debug_sections is empty (the common case for
+    /// ReleaseSmall builds).
+    fn appendDebugSections(
+        self: *Program,
+        allocator: std.mem.Allocator,
+        pr: *const ParseResult,
+        current_offset: *u64,
+    ) !void {
+        for (pr.debug_sections) |ds| {
+            const name_offset = @as(u32, @intCast(1 + cumulativeNameLen(self.section_names.items)));
+            var section = section_mod.DebugSection{
+                .section_name = ds.name,
+                .name_offset = name_offset,
+                .data = ds.data,
+            };
+            try self.section_names.append(allocator, ds.name);
+            section.setOffset(current_offset.*);
+            current_offset.* += section.size();
+            try self.appendSection(allocator, .{ .debug = section });
         }
     }
 
@@ -454,7 +484,20 @@ pub const Program = struct {
         dynamic_section.dynstr_offset = dynstr_section.offset;
         dynamic_section.dynstr_size = dynstr_section.size();
 
-        // --- shstrtab at the end.
+        // Push the 4 dynamic sections now (after back-fills, before debug).
+        // This keeps the section-table order Rust expects:
+        //   [Null, Code, (Data?), Dynamic, DynSym, DynStr, RelDyn, Debug*, ShStrTab]
+        try self.appendSection(allocator, .{ .dynamic = dynamic_section });
+        try self.appendSection(allocator, .{ .dynsym = dynsym_section });
+        try self.appendSection(allocator, .{ .dynstr = dynstr_section });
+        try self.appendSection(allocator, .{ .reldyn = rel_dyn_section });
+
+        // D.2: reuse parsed `.debug_*` sections (if any) between reldyn
+        // and shstrtab. Bumps current_offset + adds debug names to
+        // section_names so shstrtab's name_offset is correct.
+        try self.appendDebugSections(allocator, pr, current_offset);
+
+        // --- shstrtab at the end (after all debug names are in).
         const shstrtab_name_offset = @as(u32, @intCast(1 + cumulativeNameLen(self.section_names.items)));
         var shstrtab = section_mod.ShStrTabSection{
             .name_offset = shstrtab_name_offset,
@@ -488,11 +531,8 @@ pub const Program = struct {
             ProgramHeader.newDynamic(dynamic_section.offset, dynamic_section.size()),
         );
 
-        // --- final section push order matches Rust program.rs L337-346.
-        try self.appendSection(allocator, .{ .dynamic = dynamic_section });
-        try self.appendSection(allocator, .{ .dynsym = dynsym_section });
-        try self.appendSection(allocator, .{ .dynstr = dynstr_section });
-        try self.appendSection(allocator, .{ .reldyn = rel_dyn_section });
+        // --- push shstrtab last (dynamic/dynsym/dynstr/reldyn were pushed
+        // earlier, before appendDebugSections).
         try self.appendSection(allocator, .{ .shstrtab = shstrtab });
     }
 
@@ -556,10 +596,13 @@ pub const Program = struct {
         current_offset: *u64,
         text_offset: u64,
     ) !void {
-        _ = pr;
         _ = text_offset;
-        // V0 static: no dynamic sections, no program headers. Just append
-        // the shstrtab at the end.
+
+        // D.2: reuse parsed `.debug_*` sections (if any) before shstrtab.
+        try self.appendDebugSections(allocator, pr, current_offset);
+
+        // V0 static: no dynamic sections, no program headers. Shstrtab
+        // is the last section.
         const shstrtab_name_offset = @as(u32, @intCast(1 + cumulativeNameLen(self.section_names.items)));
         var shstrtab = section_mod.ShStrTabSection{
             .name_offset = shstrtab_name_offset,
