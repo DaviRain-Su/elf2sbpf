@@ -54,6 +54,10 @@ pub const ElfHeader = emit_header.ElfHeader;
 pub const ProgramHeader = emit_header.ProgramHeader;
 pub const SectionHeader = emit_header.SectionHeader;
 
+const emit_section_types = @import("emit/section_types.zig");
+pub const NullSection = emit_section_types.NullSection;
+pub const ShStrTabSection = emit_section_types.ShStrTabSection;
+
 // Make sub-module tests runnable via `zig build test`.
 test {
     _ = @import("common/number.zig");
@@ -70,6 +74,7 @@ test {
     _ = @import("ast/node.zig");
     _ = @import("ast/ast.zig");
     _ = @import("emit/header.zig");
+    _ = @import("emit/section_types.zig");
     _ = @import("integration_test.zig");
 }
 

@@ -1061,19 +1061,16 @@ pub fn rewriteRelocations(
 
             switch (inst.opcode) {
                 .Lddw => {
-                    const addend: u64 = if (r.addend) |rela_addend|
-                        blk: {
-                            if (rela_addend < 0) return RewriteError.LddwTargetOutsideRodata;
-                            break :blk @intCast(rela_addend);
-                        }
-                    else
-                        blk: {
-                            if (inst.imm) |imm| switch (imm) {
-                                .right => |n| break :blk @bitCast(n.toI64()),
-                                else => break :blk 0,
-                            };
-                            break :blk 0;
+                    const addend: u64 = if (r.addend) |rela_addend| blk: {
+                        if (rela_addend < 0) return RewriteError.LddwTargetOutsideRodata;
+                        break :blk @intCast(rela_addend);
+                    } else blk: {
+                        if (inst.imm) |imm| switch (imm) {
+                            .right => |n| break :blk @bitCast(n.toI64()),
+                            else => break :blk 0,
                         };
+                        break :blk 0;
+                    };
                     const sym_sec = sym.sectionIndex() orelse continue;
                     const key: RodataKey = .{ .section_index = sym_sec, .address = addend };
                     const slot = rodata_table.find(key) orelse {
@@ -1086,7 +1083,10 @@ pub fn rewriteRelocations(
                         // STT_SECTION: look for a named symbol at
                         // (target_section, current_imm_as_u64). If found,
                         // swap imm for its name; otherwise leave alone.
-                        const current_addend: u64 = blk: {
+                        const current_addend: u64 = if (r.addend) |rela_addend| blk: {
+                            if (rela_addend < 0) continue;
+                            break :blk @intCast(rela_addend);
+                        } else blk: {
                             if (inst.imm) |imm| switch (imm) {
                                 .right => |n| break :blk @bitCast(n.toI64()),
                                 else => break :blk 0,
@@ -1136,11 +1136,16 @@ fn makeMultiTextElf() [544]u8 {
         "\x00.text\x00.text.foo\x00.text.bar\x00.rodata\x00.shstrtab\x00";
     @memcpy(out[shstrtab_off .. shstrtab_off + shstrtab.len], shstrtab);
 
-    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[0] = 0x7f;
+    out[1] = 'E';
+    out[2] = 'L';
+    out[3] = 'F';
     out[std.elf.EI.CLASS] = std.elf.ELFCLASS64;
     out[std.elf.EI.DATA] = std.elf.ELFDATA2LSB;
     out[std.elf.EI.VERSION] = 1;
-    out[16] = 3; out[18] = 247; out[20] = 1;
+    out[16] = 3;
+    out[18] = 247;
+    out[20] = 1;
     std.mem.writeInt(u64, out[40..48], 64, .little);
     out[52] = 64;
     out[58] = 64;
@@ -1187,11 +1192,16 @@ fn makeRelDynsymElf() [704]u8 {
         "\x00.text\x00.rodata\x00.dynstr\x00.dynsym\x00.rel.text\x00.shstrtab\x00";
     @memcpy(out[shstrtab_off .. shstrtab_off + shstrtab.len], shstrtab);
 
-    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[0] = 0x7f;
+    out[1] = 'E';
+    out[2] = 'L';
+    out[3] = 'F';
     out[std.elf.EI.CLASS] = std.elf.ELFCLASS64;
     out[std.elf.EI.DATA] = std.elf.ELFDATA2LSB;
     out[std.elf.EI.VERSION] = 1;
-    out[16] = 3; out[18] = 247; out[20] = 1;
+    out[16] = 3;
+    out[18] = 247;
+    out[20] = 1;
     std.mem.writeInt(u64, out[40..48], 64, .little);
     out[52] = 64;
     out[58] = 64;
@@ -1259,11 +1269,16 @@ fn makeRelaLddwElf() [704]u8 {
         "\x00.text\x00.rodata\x00.strtab\x00.symtab\x00.rela.text\x00.shstrtab\x00";
     @memcpy(out[shstrtab_off .. shstrtab_off + shstrtab.len], shstrtab);
 
-    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[0] = 0x7f;
+    out[1] = 'E';
+    out[2] = 'L';
+    out[3] = 'F';
     out[std.elf.EI.CLASS] = std.elf.ELFCLASS64;
     out[std.elf.EI.DATA] = std.elf.ELFDATA2LSB;
     out[std.elf.EI.VERSION] = 1;
-    out[16] = 3; out[18] = 247; out[20] = 1;
+    out[16] = 3;
+    out[18] = 247;
+    out[20] = 1;
     std.mem.writeInt(u64, out[40..48], 64, .little);
     out[52] = 64;
     out[58] = 64;
@@ -1888,11 +1903,16 @@ test "rewriteRelocations: hello.o lddw gets rodata label" {
 test "decodeTextSections: empty text section yields empty result" {
     // Minimal ELF with no sections — no text, no instructions.
     var out: [@sizeOf(std.elf.Elf64_Ehdr)]u8 = @splat(0);
-    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[0] = 0x7f;
+    out[1] = 'E';
+    out[2] = 'L';
+    out[3] = 'F';
     out[std.elf.EI.CLASS] = std.elf.ELFCLASS64;
     out[std.elf.EI.DATA] = std.elf.ELFDATA2LSB;
     out[std.elf.EI.VERSION] = 1;
-    out[16] = 3; out[18] = 247; out[20] = 1;
+    out[16] = 3;
+    out[18] = 247;
+    out[20] = 1;
     out[52] = 64;
     out[58] = 64;
 

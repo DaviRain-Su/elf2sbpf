@@ -127,6 +127,8 @@ pub const Instruction = struct {
     /// TODO(B.9): swap in the whitelist once syscalls.zig is ready.
     pub fn isSyscall(self: Instruction) bool {
         if (self.opcode != .Call) return false;
+        // V3 syscalls: src=0, imm=resolved hash (.right)
+        if (self.src != null and self.src.?.n == 0) return true;
         const imm = self.imm orelse return false;
         return switch (imm) {
             .left => true,

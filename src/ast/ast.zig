@@ -20,6 +20,12 @@ pub const Label = node_mod.Label;
 pub const ROData = node_mod.ROData;
 pub const GlobalDecl = node_mod.GlobalDecl;
 
+const NumericLabelEntry = struct {
+    name: []const u8,
+    offset: u64,
+    idx: usize,
+};
+
 /// Target SBPF architecture. V0 is what elf2sbpf C1 MVP targets; V3 is
 /// deferred to D.
 pub const SbpfArch = enum { V0, V3 };
@@ -227,16 +233,18 @@ pub const AST = struct {
     /// Build a ParseResult from this AST, resolving all symbolic labels
     /// into concrete offsets / addresses.
     ///
+    /// **Consumes the AST** — after this call `self.nodes` and
+    /// `self.rodata_nodes` are empty; ownership is transferred to the
+    /// returned ParseResult. Callers must not use the AST again.
+    ///
     /// Spec: 03-technical-spec.md §6.3
-    pub fn buildProgram(self: *AST, arch: SbpfArch) BuildProgramError!ParseResult {
+    pub fn buildProgram(self: *AST, arch: SbpfArch, debug_sections: []const DebugSection) BuildProgramError!ParseResult {
         const alloc = self.allocator;
 
         // Phase A: collect label → offset mappings.
         var label_map = std.StringHashMap(u64).init(alloc);
         defer label_map.deinit();
 
-        const NumericLabelEntry = struct { name: []const u8, offset: u64, idx: usize };
-        // Numeric labels: (name, offset, node_index) for 1f/2b resolution.
         var numeric_labels: std.ArrayList(NumericLabelEntry) = .empty;
         defer numeric_labels.deinit(alloc);
 
@@ -244,9 +252,12 @@ pub const AST = struct {
             switch (n.*) {
                 .Label => |payload| {
                     try label_map.put(payload.label.name, payload.offset);
-                    // Record numeric-style labels (e.g. "1", "2") for forward/backward resolution.
                     if (isNumericLabel(payload.label.name)) {
-                        try numeric_labels.append(alloc, .{ .name = payload.label.name, .offset = payload.offset, .idx = idx });
+                        try numeric_labels.append(alloc, .{
+                            .name = payload.label.name,
+                            .offset = payload.offset,
+                            .idx = idx,
+                        });
                     }
                 },
                 else => {},
@@ -275,11 +286,11 @@ pub const AST = struct {
         // references requiring R_SBF_64_RELATIVE at load time).
         var prog_is_static = true;
         if (arch != .V3) {
-            for (self.nodes.items) |*n| {
+            for (self.nodes.items, 0..) |*n, idx| {
                 switch (n.*) {
                     .Instruction => |payload| {
                         const inst = payload.instruction;
-                        if (inst.isSyscall()) {
+                        if (isSyscallCandidate(inst, &label_map, numeric_labels.items, idx)) {
                             prog_is_static = false;
                             break;
                         }
@@ -302,11 +313,14 @@ pub const AST = struct {
         var relocation_data = RelDynMap.init(alloc);
 
         // Phase C: syscall injection.
-        for (self.nodes.items) |*n| {
+        // Syscalls are Call instructions with an unresolved (.left) imm label.
+        // We mark them by setting src=1, imm=-1 (V0) or resolve to hash (V3).
+        // This marker is checked in Phase D to skip syscall calls.
+        for (self.nodes.items, 0..) |*n, idx| {
             switch (n.*) {
                 .Instruction => |*payload| {
                     var inst = &payload.instruction;
-                    if (!inst.isSyscall()) continue;
+                    if (!isSyscallCandidate(inst.*, &label_map, numeric_labels.items, idx)) continue;
                     const name = switch (inst.imm.?) {
                         .left => |label| label,
                         .right => continue,
@@ -315,6 +329,7 @@ pub const AST = struct {
                         inst.src = .{ .n = 0 };
                         inst.imm = .{ .right = .{ .Int = @intCast(syscall_mod.murmur3_32(name)) } };
                     } else {
+                        // Mark as syscall: src=1, imm=-1. Phase D skips these.
                         inst.src = .{ .n = 1 };
                         inst.imm = .{ .right = .{ .Int = -1 } };
                         try relocation_data.addRelDyn(alloc, payload.offset, .RSbfSyscall, name);
@@ -326,7 +341,7 @@ pub const AST = struct {
         }
 
         // Phase D: jump / call label resolution.
-        for (self.nodes.items) |*n| {
+        for (self.nodes.items, 0..) |*n, idx| {
             switch (n.*) {
                 .Instruction => |*payload| {
                     var inst = &payload.instruction;
@@ -339,7 +354,7 @@ pub const AST = struct {
                             .left => |label| label,
                             .right => continue,
                         };
-                        const target_offset = try resolveLabel(&label_map, label_name);
+                        const target_offset = try resolveLabel(&label_map, numeric_labels.items, idx, label_name);
                         const rel_offset = @divExact(@as(i64, @intCast(target_offset)) - @as(i64, @intCast(offset)), 8) - 1;
                         inst.off = .{ .right = @intCast(rel_offset) };
                         continue;
@@ -352,15 +367,12 @@ pub const AST = struct {
                             .left => |label| label,
                             .right => continue,
                         };
-                        // Skip if already handled as syscall in Phase C.
-                        if (inst.src != null and inst.src.?.n == 1 and
-                            inst.imm != null and inst.imm.? == .right and inst.imm.?.right == .Int and inst.imm.?.right.Int == -1)
-                        {
-                            continue;
-                        }
-                        const target_offset = label_map.get(label_name) orelse {
-                            return BuildProgramError.UndefinedLabel;
-                        };
+                        // Skip syscalls: marked by src=1, imm=-1 in Phase C.
+                        const is_marked_syscall = inst.src != null and inst.src.?.n == 1 and
+                            inst.imm != null and inst.imm.? == .right and inst.imm.?.right == .Int and inst.imm.?.right.Int == -1;
+                        if (is_marked_syscall) continue;
+
+                        const target_offset = try resolveLabel(&label_map, numeric_labels.items, idx, label_name);
                         const rel_offset = @divExact(@as(i64, @intCast(target_offset)) - @as(i64, @intCast(offset)), 8) - 1;
                         inst.src = .{ .n = 1 };
                         inst.imm = .{ .right = .{ .Int = rel_offset } };
@@ -374,7 +386,7 @@ pub const AST = struct {
         const ph_count: u64 = if (prog_is_static) 1 else 3;
         const ph_offset: u64 = 64 + ph_count * 56;
 
-        for (self.nodes.items) |*n| {
+        for (self.nodes.items, 0..) |*n, idx| {
             switch (n.*) {
                 .Instruction => |*payload| {
                     var inst = &payload.instruction;
@@ -384,9 +396,7 @@ pub const AST = struct {
                         .left => |label| label,
                         .right => continue,
                     };
-                    const target_offset = label_map.get(label_name) orelse {
-                        return BuildProgramError.UndefinedLabel;
-                    };
+                    const target_offset = try resolveLabel(&label_map, numeric_labels.items, idx, label_name);
 
                     if (arch != .V3) {
                         try relocation_data.addRelDyn(alloc, payload.offset, .RSbf64Relative, label_name);
@@ -429,7 +439,7 @@ pub const AST = struct {
             .relocation_data = relocation_data,
             .prog_is_static = prog_is_static,
             .arch = arch,
-            .debug_sections = &.{},
+            .debug_sections = debug_sections,
         };
     }
 };
@@ -446,10 +456,67 @@ fn isNumericLabel(name: []const u8) bool {
     return true;
 }
 
+fn parseNumericLabelReference(name: []const u8) ?struct { base: []const u8, forward: bool } {
+    if (name.len < 2) return null;
+    const suffix = name[name.len - 1];
+    if (suffix != 'f' and suffix != 'b') return null;
+    const base = name[0 .. name.len - 1];
+    if (!isNumericLabel(base)) return null;
+    return .{ .base = base, .forward = suffix == 'f' };
+}
+
+fn resolveNumericLabel(
+    numeric_labels: []const NumericLabelEntry,
+    current_idx: usize,
+    label_name: []const u8,
+) ?u64 {
+    const ref = parseNumericLabelReference(label_name) orelse return null;
+    if (ref.forward) {
+        for (numeric_labels) |entry| {
+            if (entry.idx > current_idx and std.mem.eql(u8, entry.name, ref.base)) {
+                return entry.offset;
+            }
+        }
+        return null;
+    }
+
+    var i = numeric_labels.len;
+    while (i > 0) {
+        i -= 1;
+        const entry = numeric_labels[i];
+        if (entry.idx < current_idx and std.mem.eql(u8, entry.name, ref.base)) {
+            return entry.offset;
+        }
+    }
+    return null;
+}
+
+fn isSyscallCandidate(
+    inst: instruction_mod.Instruction,
+    label_map: *std.StringHashMap(u64),
+    numeric_labels: []const NumericLabelEntry,
+    current_idx: usize,
+) bool {
+    if (inst.opcode != .Call) return false;
+    const imm = inst.imm orelse return false;
+    const label_name = switch (imm) {
+        .left => |label| label,
+        .right => return false,
+    };
+    _ = resolveLabel(label_map, numeric_labels, current_idx, label_name) catch
+        return true;
+    return false;
+}
+
 fn resolveLabel(
     label_map: *std.StringHashMap(u64),
+    numeric_labels: []const NumericLabelEntry,
+    current_idx: usize,
     label_name: []const u8,
 ) AST.BuildProgramError!u64 {
+    if (resolveNumericLabel(numeric_labels, current_idx, label_name)) |offset| {
+        return offset;
+    }
     return label_map.get(label_name) orelse AST.BuildProgramError.UndefinedLabel;
 }
 
@@ -571,7 +638,7 @@ test "buildProgram: empty AST → empty ParseResult" {
     var ast = AST.init(testing.allocator);
     defer ast.deinit();
 
-    var pr = try ast.buildProgram(.V0);
+    var pr = try ast.buildProgram(.V0, &.{});
     defer pr.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 0), pr.code_section.nodes.items.len);
@@ -595,7 +662,7 @@ test "buildProgram: single label entrypoint → label_offset_map effective" {
         .global_decl = .{ .entry_label = "entrypoint", .span = .{ .start = 0, .end = 1 } },
     } });
 
-    var pr = try ast.buildProgram(.V0);
+    var pr = try ast.buildProgram(.V0, &.{});
     defer pr.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), pr.dynamic_symbols.entries.items.len);
@@ -620,7 +687,7 @@ test "buildProgram: syscall injection V0" {
     };
     try ast.pushNode(.{ .Instruction = .{ .instruction = call_inst, .offset = 0 } });
 
-    var pr = try ast.buildProgram(.V0);
+    var pr = try ast.buildProgram(.V0, &.{});
     defer pr.deinit(testing.allocator);
 
     // Syscall injected: src=1, imm=-1
@@ -635,6 +702,37 @@ test "buildProgram: syscall injection V0" {
     try testing.expectEqual(@as(usize, 1), pr.dynamic_symbols.entries.items.len);
     try testing.expectEqualStrings("sol_log_", pr.relocation_data.entries.items[0].symbol_name);
     try testing.expectEqualStrings("sol_log_", pr.dynamic_symbols.entries.items[0].name);
+}
+
+test "buildProgram: ordinary symbolic call resolves as relative call" {
+    var ast = AST.init(testing.allocator);
+    defer ast.deinit();
+    ast.setTextSize(16);
+
+    const call_inst = instruction_mod.Instruction{
+        .opcode = .Call,
+        .dst = null,
+        .src = null,
+        .off = null,
+        .imm = .{ .left = "foo" },
+        .span = .{ .start = 0, .end = 8 },
+    };
+    try ast.pushNode(.{ .Instruction = .{ .instruction = call_inst, .offset = 0 } });
+    try ast.pushNode(.{ .Label = .{
+        .label = .{ .name = "foo", .span = .{ .start = 0, .end = 1 } },
+        .offset = 8,
+    } });
+
+    var pr = try ast.buildProgram(.V0, &.{});
+    defer pr.deinit(testing.allocator);
+
+    const inst = pr.code_section.nodes.items[0].Instruction.instruction;
+    try testing.expectEqual(@as(u8, 1), inst.src.?.n);
+    try testing.expect(inst.imm.? == .right);
+    try testing.expectEqual(@as(i64, 0), inst.imm.?.right.Int);
+    try testing.expectEqual(@as(usize, 0), pr.relocation_data.entries.items.len);
+    try testing.expectEqual(@as(usize, 0), pr.dynamic_symbols.entries.items.len);
+    try testing.expect(pr.prog_is_static);
 }
 
 test "buildProgram: jump label resolution" {
@@ -657,7 +755,7 @@ test "buildProgram: jump label resolution" {
         .offset = 8,
     } });
 
-    var pr = try ast.buildProgram(.V0);
+    var pr = try ast.buildProgram(.V0, &.{});
     defer pr.deinit(testing.allocator);
 
     const resolved = pr.code_section.nodes.items[0].Instruction.instruction;
@@ -665,6 +763,33 @@ test "buildProgram: jump label resolution" {
     try testing.expect(off_val == .right);
     // rel = (8 - 0) / 8 - 1 = 0
     try testing.expectEqual(@as(i16, 0), off_val.right);
+}
+
+test "buildProgram: numeric forward label resolution" {
+    var ast = AST.init(testing.allocator);
+    defer ast.deinit();
+    ast.setTextSize(16);
+
+    const ja_inst = instruction_mod.Instruction{
+        .opcode = .Ja,
+        .dst = null,
+        .src = null,
+        .off = .{ .left = "1f" },
+        .imm = null,
+        .span = .{ .start = 0, .end = 8 },
+    };
+    try ast.pushNode(.{ .Instruction = .{ .instruction = ja_inst, .offset = 0 } });
+    try ast.pushNode(.{ .Label = .{
+        .label = .{ .name = "1", .span = .{ .start = 0, .end = 1 } },
+        .offset = 8,
+    } });
+
+    var pr = try ast.buildProgram(.V0, &.{});
+    defer pr.deinit(testing.allocator);
+
+    const resolved = pr.code_section.nodes.items[0].Instruction.instruction;
+    try testing.expect(resolved.off.? == .right);
+    try testing.expectEqual(@as(i16, 0), resolved.off.?.right);
 }
 
 test "buildProgram: lddw absolutization V0 (symbolic-imm → dynamic)" {
@@ -689,7 +814,7 @@ test "buildProgram: lddw absolutization V0 (symbolic-imm → dynamic)" {
         .offset = 0,
     } });
 
-    var pr = try ast.buildProgram(.V0);
+    var pr = try ast.buildProgram(.V0, &.{});
     defer pr.deinit(testing.allocator);
 
     // A program with a symbolic lddw is NOT static — it needs a
@@ -740,7 +865,7 @@ test "buildProgram: lddw absolutization V0 dynamic" {
         .offset = 0,
     } });
 
-    var pr = try ast.buildProgram(.V0);
+    var pr = try ast.buildProgram(.V0, &.{});
     defer pr.deinit(testing.allocator);
 
     try testing.expect(!pr.prog_is_static);
