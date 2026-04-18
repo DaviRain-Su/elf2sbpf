@@ -405,9 +405,7 @@ pub fn collectLddwTargets(
         const target_sec_idx_raw = rel_sec.header.sh_info;
         if (target_sec_idx_raw > std.math.maxInt(u16)) continue;
         const target_sec_idx: u16 = @intCast(target_sec_idx_raw);
-        const symtab_idx_raw = rel_sec.header.sh_link;
-        if (symtab_idx_raw > std.math.maxInt(u16)) continue;
-        const symtab_idx: u16 = @intCast(symtab_idx_raw);
+        _ = rel_sec.header.sh_link;
 
         // Only consider relocations that operate on a text section.
         const text_sec = blk: {
@@ -417,18 +415,15 @@ pub fn collectLddwTargets(
             continue;
         };
 
+        // Pre-build symbol lookup for this relocation section's symtab.
+        var sym_lookup = buildSymbolLookup(allocator, file) catch continue;
+        defer sym_lookup.deinit(allocator);
+
         var rel_it = try file.iterRelocations(rel_sec);
         while (rel_it.next()) |r| {
-            // Resolve the target symbol's section.
-            var sym_iter = file.iterSymbolsAt(symtab_idx) catch continue;
-            var target_sym: ?symbol_mod.Symbol = null;
-            while (try sym_iter.next()) |s| {
-                if (s.index == r.symbol_index) {
-                    target_sym = s;
-                    break;
-                }
-            }
-            const sym = target_sym orelse continue;
+            // Resolve target symbol via O(1) lookup.
+            if (r.symbol_index >= sym_lookup.items.len) continue;
+            const sym = sym_lookup.items[r.symbol_index];
             const sym_sec = sym.sectionIndex() orelse continue;
             if (sections.roSectionByIndex(sym_sec) == null) continue;
 
@@ -955,7 +950,8 @@ fn findInstructionAtOffset(text_scan: *TextScan, target: u64) ?*DecodedInstructi
 }
 
 /// Build a lookup table: symbol_index → Symbol for O(1) symbol resolution.
-/// Used by rewriteRelocations to avoid O(N*M) linear scans.
+/// Used by rewriteRelocations and collectLddwTargets to avoid O(N*M) linear
+/// scans. Tries .symtab first, falls back to .dynsym if present.
 fn buildSymbolLookup(
     allocator: std.mem.Allocator,
     file: *const elf_mod.ElfFile,
@@ -963,13 +959,19 @@ fn buildSymbolLookup(
     var table: std.ArrayList(symbol_mod.Symbol) = .empty;
     errdefer table.deinit(allocator);
 
-    var sym_iter = file.iterSymbols(.symtab) catch return table;
-    while (sym_iter.next() catch null) |s| {
-        // Ensure the table is large enough to index by s.index
-        while (table.items.len <= s.index) {
-            try table.append(allocator, undefined);
+    // Try .symtab first (static object files), then .dynsym (linked .so).
+    const kinds = [_]symbol_mod.SymTableKind{ .symtab, .dynsym };
+    for (kinds) |kind| {
+        var sym_iter = file.iterSymbols(kind) catch continue;
+        while (sym_iter.next() catch null) |s| {
+            // Ensure the table is large enough to index by s.index
+            while (table.items.len <= s.index) {
+                try table.append(allocator, undefined);
+            }
+            table.items[s.index] = s;
         }
-        table.items[s.index] = s;
+        // If we found symbols, stop; don't merge both tables.
+        if (table.items.len > 0) break;
     }
     return table;
 }

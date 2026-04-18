@@ -65,6 +65,7 @@ pub const LinkError = error{
 
     // byteparser
     InstructionDecodeFailed,
+    TextSectionMisaligned,
     LddwTargetOutsideRodata,
     LddwTargetInsideNamedEntry,
     CallTargetUnresolvable,
@@ -116,6 +117,7 @@ test "LinkError has all required variants" {
         @errorName(LinkError.UnsupportedClass),
         @errorName(LinkError.UnsupportedEndian),
         @errorName(LinkError.InstructionDecodeFailed),
+        @errorName(LinkError.TextSectionMisaligned),
         @errorName(LinkError.LddwTargetOutsideRodata),
         @errorName(LinkError.LddwTargetInsideNamedEntry),
         @errorName(LinkError.CallTargetUnresolvable),
@@ -125,5 +127,5 @@ test "LinkError has all required variants" {
         @errorName(LinkError.TextTooLarge),
         @errorName(LinkError.OutOfMemory),
     };
-    try std.testing.expectEqual(@as(usize, 13), names.len);
+    try std.testing.expectEqual(@as(usize, 14), names.len);
 }
