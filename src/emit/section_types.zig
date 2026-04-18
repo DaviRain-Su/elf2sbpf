@@ -16,6 +16,9 @@
 const std = @import("std");
 const header_mod = @import("header.zig");
 const SectionHeader = header_mod.SectionHeader;
+const ast_mod = @import("../ast/ast.zig");
+const ASTNode = ast_mod.ASTNode;
+const instruction_mod = @import("../common/instruction.zig");
 
 // ---------------------------------------------------------------------------
 // NullSection — the mandatory SHT_NULL entry at index 0 of every ELF.
@@ -147,6 +150,166 @@ pub const ShStrTabSection = struct {
 };
 
 // ---------------------------------------------------------------------------
+// CodeSection — the merged .text image (executable instructions).
+// ---------------------------------------------------------------------------
+
+/// Holds the instruction-bearing AST nodes plus the final merged size.
+/// Rust section.rs L29-95.
+///
+/// `nodes` is a slice of the code-section ASTNode list (borrowed from
+/// ParseResult). Emission walks the list in order, serializing only the
+/// Instruction variants — Label and GlobalDecl are metadata that don't
+/// contribute bytes.
+pub const CodeSection = struct {
+    /// Borrowed slice of the code-section AST nodes.
+    nodes: []const ASTNode,
+    /// Total emitted size = sum of Instruction.getSize() for each
+    /// Instruction node in `nodes`. Provided by caller (from AST.text_size).
+    size: u64,
+    /// Offset into the output file. Set by Program::fromParseResult
+    /// during layout.
+    offset: u64 = 0,
+
+    pub fn name(self: CodeSection) []const u8 {
+        _ = self;
+        return ".text";
+    }
+
+    pub fn setOffset(self: *CodeSection, o: u64) void {
+        self.offset = o;
+    }
+
+    /// Serialize all Instruction nodes back to bytes via
+    /// Instruction.toBytes. Caller owns the returned slice.
+    ///
+    /// Size of the returned buffer == self.size (the caller-provided
+    /// total). If a node carries an unresolved .left(label) in imm/off,
+    /// returns EncodeError.UnresolvedLabel — i.e. caller forgot to run
+    /// buildProgram before emitting.
+    pub fn bytecode(self: CodeSection, allocator: std.mem.Allocator) ![]u8 {
+        const buf = try allocator.alloc(u8, @intCast(self.size));
+        errdefer allocator.free(buf);
+
+        var cursor: usize = 0;
+        for (self.nodes) |n| {
+            switch (n) {
+                .Instruction => |payload| {
+                    const inst = payload.instruction;
+                    const step: usize = @intCast(inst.getSize());
+                    if (cursor + step > buf.len) return error.TextTooLarge;
+                    if (step == 16) {
+                        try inst.toBytes(buf[cursor .. cursor + 16][0..16]);
+                    } else {
+                        try inst.toBytes(buf[cursor .. cursor + 8][0..8]);
+                    }
+                    cursor += step;
+                },
+                else => {},
+            }
+        }
+
+        // Any unused tail bytes stay as their initial value (allocator
+        // provides undefined content) — zero them to be deterministic.
+        @memset(buf[cursor..], 0);
+
+        return buf;
+    }
+
+    /// 64-byte section header: PROGBITS + ALLOC|EXECINSTR, align 4.
+    pub fn sectionHeaderBytecode(
+        self: CodeSection,
+        name_offset: u32,
+        out: *[64]u8,
+    ) void {
+        const flags = header_mod.SHF_ALLOC | header_mod.SHF_EXECINSTR;
+        const sh = SectionHeader.init(
+            name_offset,
+            header_mod.SHT_PROGBITS,
+            flags,
+            self.offset,
+            self.offset,
+            self.size,
+            0,
+            0,
+            4,
+            0,
+        );
+        sh.bytecode(out);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// DataSection — the merged .rodata image (read-only constants).
+// ---------------------------------------------------------------------------
+
+/// Holds the ROData nodes plus the final rodata size.
+/// Rust section.rs L97-185.
+pub const DataSection = struct {
+    nodes: []const ASTNode,
+    size: u64,
+    offset: u64 = 0,
+
+    pub fn name(self: DataSection) []const u8 {
+        _ = self;
+        return ".rodata";
+    }
+
+    pub fn setOffset(self: *DataSection, o: u64) void {
+        self.offset = o;
+    }
+
+    /// Content size rounded up to 8-byte boundary. The raw size field
+    /// (pre-padding) stays in the section header to match the ELF
+    /// convention that sh_size counts only logical content.
+    pub fn alignedSize(self: DataSection) u64 {
+        return (self.size + 7) & ~@as(u64, 7);
+    }
+
+    /// Concatenate all ROData.bytes slices and 8-byte-pad the tail.
+    pub fn bytecode(self: DataSection, allocator: std.mem.Allocator) ![]u8 {
+        const aligned = self.alignedSize();
+        const buf = try allocator.alloc(u8, @intCast(aligned));
+        errdefer allocator.free(buf);
+        @memset(buf, 0);
+
+        var cursor: usize = 0;
+        for (self.nodes) |n| {
+            switch (n) {
+                .ROData => |payload| {
+                    const bytes = payload.rodata.bytes;
+                    if (cursor + bytes.len > buf.len) return error.RodataTooLarge;
+                    @memcpy(buf[cursor .. cursor + bytes.len], bytes);
+                    cursor += bytes.len;
+                },
+                else => {},
+            }
+        }
+
+        return buf;
+    }
+
+    pub fn sectionHeaderBytecode(
+        self: DataSection,
+        name_offset: u32,
+        out: *[64]u8,
+    ) void {
+        const sh = SectionHeader.init(
+            name_offset,
+            header_mod.SHT_PROGBITS,
+            header_mod.SHF_ALLOC,
+            self.offset,
+            self.offset,
+            self.size, // sh_size holds unpadded logical size
+            0,
+            0,
+            1,
+            0,
+        );
+        sh.bytecode(out);
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -237,4 +400,124 @@ test "ShStrTabSection: section header uses SHT_STRTAB with addralign=1" {
     try testing.expectEqual(@as(u64, 10), std.mem.readInt(u64, out[32..40], .little));
     // sh_addralign at offset 48 = 1
     try testing.expectEqual(@as(u64, 1), std.mem.readInt(u64, out[48..56], .little));
+}
+
+test "CodeSection: emit a single exit instruction (8 bytes)" {
+    const exit_inst = instruction_mod.Instruction{
+        .opcode = .Exit,
+        .dst = null, .src = null, .off = null, .imm = null,
+        .span = .{ .start = 0, .end = 8 },
+    };
+    const nodes = [_]ASTNode{
+        .{ .Instruction = .{ .instruction = exit_inst, .offset = 0 } },
+    };
+    const cs = CodeSection{ .nodes = &nodes, .size = 8 };
+
+    const bytes = try cs.bytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(usize, 8), bytes.len);
+    // Exit encodes to 95 00 00 00 00 00 00 00
+    try testing.expectEqual(@as(u8, 0x95), bytes[0]);
+    for (bytes[1..]) |b| try testing.expectEqual(@as(u8, 0), b);
+}
+
+test "CodeSection: skips Label and GlobalDecl nodes, emits only Instructions" {
+    const mov_inst = instruction_mod.Instruction{
+        .opcode = .Mov64Imm,
+        .dst = .{ .n = 0 }, .src = null, .off = null,
+        .imm = .{ .right = .{ .Int = 42 } },
+        .span = .{ .start = 0, .end = 8 },
+    };
+    const exit_inst = instruction_mod.Instruction{
+        .opcode = .Exit,
+        .dst = null, .src = null, .off = null, .imm = null,
+        .span = .{ .start = 0, .end = 8 },
+    };
+    const nodes = [_]ASTNode{
+        .{ .Label = .{ .label = .{ .name = "entry", .span = .{ .start = 0, .end = 1 } }, .offset = 0 } },
+        .{ .Instruction = .{ .instruction = mov_inst, .offset = 0 } },
+        .{ .GlobalDecl = .{ .global_decl = .{ .entry_label = "entry", .span = .{ .start = 0, .end = 1 } } } },
+        .{ .Instruction = .{ .instruction = exit_inst, .offset = 8 } },
+    };
+    const cs = CodeSection{ .nodes = &nodes, .size = 16 };
+
+    const bytes = try cs.bytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(usize, 16), bytes.len);
+    try testing.expectEqual(@as(u8, 0xb7), bytes[0]); // mov64 imm opcode
+    try testing.expectEqual(@as(u8, 42), bytes[4]); // imm low byte
+    try testing.expectEqual(@as(u8, 0x95), bytes[8]); // exit opcode
+}
+
+test "CodeSection: section header uses PROGBITS + ALLOC|EXECINSTR, align 4" {
+    const cs = CodeSection{
+        .nodes = &.{},
+        .size = 0x40,
+        .offset = 0xe8,
+    };
+    var out: [64]u8 = undefined;
+    cs.sectionHeaderBytecode(1, &out);
+
+    try testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, out[0..4], .little)); // sh_name
+    try testing.expectEqual(@as(u32, header_mod.SHT_PROGBITS), std.mem.readInt(u32, out[4..8], .little));
+    try testing.expectEqual(header_mod.SHF_ALLOC | header_mod.SHF_EXECINSTR, std.mem.readInt(u64, out[8..16], .little));
+    try testing.expectEqual(@as(u64, 0xe8), std.mem.readInt(u64, out[16..24], .little)); // sh_addr
+    try testing.expectEqual(@as(u64, 0xe8), std.mem.readInt(u64, out[24..32], .little)); // sh_offset
+    try testing.expectEqual(@as(u64, 0x40), std.mem.readInt(u64, out[32..40], .little)); // sh_size
+    try testing.expectEqual(@as(u64, 4), std.mem.readInt(u64, out[48..56], .little));   // sh_addralign
+}
+
+test "DataSection: pads bytes to 8-byte boundary" {
+    const ro1 = ast_mod.ROData{
+        .name = "A",
+        .bytes = "Hello",
+        .span = .{ .start = 0, .end = 5 },
+    };
+    const nodes = [_]ASTNode{
+        .{ .ROData = .{ .rodata = ro1, .offset = 0 } },
+    };
+    const ds = DataSection{ .nodes = &nodes, .size = 5 };
+
+    const bytes = try ds.bytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    // 5 bytes "Hello" + 3 zero bytes → 8.
+    try testing.expectEqual(@as(usize, 8), bytes.len);
+    try testing.expectEqualStrings("Hello", bytes[0..5]);
+    try testing.expectEqual(@as(u8, 0), bytes[5]);
+    try testing.expectEqual(@as(u8, 0), bytes[6]);
+    try testing.expectEqual(@as(u8, 0), bytes[7]);
+}
+
+test "DataSection: concatenates multiple rodata entries in order" {
+    const ro1 = ast_mod.ROData{ .name = "A", .bytes = "foo", .span = .{ .start = 0, .end = 3 } };
+    const ro2 = ast_mod.ROData{ .name = "B", .bytes = "bar", .span = .{ .start = 0, .end = 3 } };
+    const nodes = [_]ASTNode{
+        .{ .ROData = .{ .rodata = ro1, .offset = 0 } },
+        .{ .ROData = .{ .rodata = ro2, .offset = 3 } },
+    };
+    const ds = DataSection{ .nodes = &nodes, .size = 6 };
+
+    const bytes = try ds.bytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(usize, 8), bytes.len); // 6 + 2 pad
+    try testing.expectEqualStrings("foobar", bytes[0..6]);
+}
+
+test "DataSection: section header uses PROGBITS + ALLOC, unpadded sh_size" {
+    const ds = DataSection{
+        .nodes = &.{},
+        .size = 5, // logical content size
+        .offset = 0x128,
+    };
+    var out: [64]u8 = undefined;
+    ds.sectionHeaderBytecode(7, &out);
+
+    try testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, out[0..4], .little)); // sh_name
+    try testing.expectEqual(header_mod.SHF_ALLOC, std.mem.readInt(u64, out[8..16], .little));
+    try testing.expectEqual(@as(u64, 5), std.mem.readInt(u64, out[32..40], .little)); // unpadded
+    try testing.expectEqual(@as(u64, 1), std.mem.readInt(u64, out[48..56], .little)); // align 1
 }

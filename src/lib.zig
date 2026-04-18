@@ -57,6 +57,8 @@ pub const SectionHeader = emit_header.SectionHeader;
 const emit_section_types = @import("emit/section_types.zig");
 pub const NullSection = emit_section_types.NullSection;
 pub const ShStrTabSection = emit_section_types.ShStrTabSection;
+pub const CodeSection = emit_section_types.CodeSection;
+pub const DataSection = emit_section_types.DataSection;
 
 // Make sub-module tests runnable via `zig build test`.
 test {

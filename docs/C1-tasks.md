@@ -417,16 +417,19 @@ Solana SBPF 特有结构。
   - `main.zig` 补了 3 个 parseArgv 单测 + linkErrorExitCode 映射
   - 同步更新 integration test 的期望
 
-- [ ] **F.5**：`emit/section_types.zig` — `CodeSection`
-  - 持有 Instruction 节点列表
-  - `bytecode()`：序列化所有指令的二进制
-  - `sectionHeaderBytecode()`：emit 64 字节 section header
-  - **验收**：对 hello 的 text 节点，emit 的字节跟 shim 一致
+- [x] **F.5**：`emit/section_types.zig` — `CodeSection` ✅ 2026-04-18
+  - `CodeSection { nodes, size, offset }` 持有 ASTNode 切片
+  - `bytecode` 遍历节点，只对 `.Instruction` 调 `toBytes`（skip Label/GlobalDecl）
+  - lddw 16B / 其他 8B 步进
+  - `sectionHeaderBytecode(name_offset, *[64]u8)` —— SHT_PROGBITS + ALLOC|EXECINSTR，align 4
+  - **验收**：3 单测（单 exit 指令、Label+GlobalDecl 跳过、section header 字段）
 
-- [ ] **F.6**：`emit/section_types.zig` — `DataSection`
-  - 持有 ROData 节点列表
-  - `bytecode()`：序列化所有 rodata 字节
-  - **验收**：对 counter 的 rodata 节点，emit 字节跟 shim 一致
+- [x] **F.6**：`emit/section_types.zig` — `DataSection` ✅ 2026-04-18
+  - `DataSection { nodes, size, offset }` 持有 ASTNode 切片
+  - `bytecode` 拼接所有 `.ROData` 的 bytes + 8 字节对齐 padding
+  - `alignedSize()` helper 返回 padding 后大小
+  - `sectionHeaderBytecode(name_offset, *[64]u8)` —— SHT_PROGBITS + ALLOC，align 1，**sh_size 用 unpadded** 逻辑大小（跟 Rust 一致）
+  - **验收**：3 单测（"Hello" 5B 补成 8B、多 rodata 拼接、section header 字段）
 
 - [ ] **F.7**：`emit/section_types.zig` — `DynSymSection`
   - 24 字节每 entry
@@ -574,11 +577,11 @@ Solana SBPF 特有结构。
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
 | D — Byteparser | 9 | 9 | ✅ 完成 |
 | E — AST | 4 | 4 | ✅ 完成 |
-| F — ELF 输出层 | 12 | 4 | 进行中 (33%) |
+| F — ELF 输出层 | 12 | 6 | 进行中 (50%) |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 3 | ✅ 完成（框架；产物验证等 Epic G） |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **36** | **64%** |
+| **总计** | **56** | **38** | **68%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

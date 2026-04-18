@@ -1818,6 +1818,54 @@ last read" 冲突。
 section header。这次会第一次真正用到 Instruction.toBytes —— 把每
 条指令序列化成 8/16 字节。
 
+---
+
+## C1-F.5 + F.6 — CodeSection + DataSection
+
+**日期**：2026-04-18
+**状态**：✅ 完成（一个 commit 覆盖两个任务——Rust 里同在 section.rs）
+
+### CodeSection
+
+- `CodeSection { nodes, size, offset }`
+- `bytecode` 分配 `size` 字节 buffer，遍历节点：
+  - `.Instruction` 调 `Instruction.toBytes(buf[cursor..cursor+step])`
+  - `.Label` / `.GlobalDecl` skip
+  - lddw 占 16 字节，其他 8 字节
+- `sectionHeaderBytecode`：PROGBITS + ALLOC|EXECINSTR，align 4
+
+### DataSection
+
+- `DataSection { nodes, size, offset }`
+- `bytecode` 分配 `alignedSize()` 字节（8 对齐），拼接所有 ROData.bytes
+- **关键**：sh_size 用 **unpadded** `self.size`（跟 Rust 一致）—— 只在
+  bytecode 输出时 pad，不在 header 里体现
+- `sectionHeaderBytecode`：PROGBITS + ALLOC，align 1
+
+### 一个小踩坑：slice 传入 toBytes 需要**固定大小指针**
+
+```zig
+// 对 — 传 *[16]u8
+try inst.toBytes(buf[cursor .. cursor + 16][0..16]);
+```
+
+这里的 `[0..16]` 看似冗余，实际是把 `[]u8` slice 切回 `*[16]u8`
+（Zig 编译器能推断切片长度是编译期常量）。
+
+### 验收
+
+- 6 新单测（CodeSection 3 + DataSection 3）
+- 298/298 tests 全绿（lib 146 + exe 152 —— 因为 emit 层 test 同时
+  在 lib module 和 exe module 编译，所以双重计数）
+
+### 下一任务
+
+**F.7-F.10** —— 剩下的动态 section 类型：`DynSymSection` /
+`DynStrSection` / `DynamicSection` / `RelDynSection`。这些只在 V0
+dynamic 程序里出现（带 syscall 或 lddw 的 rodata 引用）；从
+ParseResult.dynamic_symbols + relocation_data 里来。
+
+
 
 
 
