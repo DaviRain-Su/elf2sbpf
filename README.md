@@ -51,7 +51,6 @@ your existing `build.zig`), then run:
 
 ```bash
 zig build -Dexample=hello
-zig build -Dexample=hello -Dlinker=sbpf-linker   # fallback to the old path
 ```
 
 This removes the need for `cargo install sbpf-linker`, `LD_LIBRARY_PATH` hacks,

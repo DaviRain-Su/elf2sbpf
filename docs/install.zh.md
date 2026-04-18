@@ -129,7 +129,7 @@ rm ~/.local/bin/elf2sbpf
 - **`Illegal instruction` 部署时**：八成是 ELF 布局问题；跑
   `./scripts/validate-zig.sh <example>` 跟 shim 比一下看看是不是
   regression
-- **zignocchio build.zig 里的 `libLLVM.so` 符号链接**：用
-  `-Dlinker=elf2sbpf` 就不用了，可以删
+- **zignocchio build.zig 里的 `libLLVM.so` 符号链接**：切到
+  基于 elf2sbpf 的 build 草稿后就不用了，可以删
 
 深层问题请开 issue。

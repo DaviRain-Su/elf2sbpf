@@ -142,6 +142,6 @@ rm ~/.local/bin/elf2sbpf
   issue; run `./scripts/validate-zig.sh <example>` against the shim to check
   whether you hit a regression
 - **`libLLVM.so` symlink hacks in zignocchio `build.zig`**: if you switch to
-  `-Dlinker=elf2sbpf`, you no longer need them and can remove them
+  the elf2sbpf-based build draft, you no longer need them and can remove them
 
 For deeper issues, please open an issue.
