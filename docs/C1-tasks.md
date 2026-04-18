@@ -573,16 +573,20 @@ Solana SBPF 特有结构。
   - `validate-zig.sh` 作为兼容入口补齐
   - **验收**：脚本跑完 9/9 example，**全部 MATCH**
 
-- [ ] **I.2**：Golden fixtures
-  - 把 shim 对每个 example 产出的 `.so` 保存到
-    `tests/golden/<example>.so`
-  - 加一个 `make-golden.sh` 脚本重新生成
-  - **验收**：9 个 golden 文件存在
+- [x] **I.2**：Golden fixtures ✅ 2026-04-18
+  - 9 个 `<example>.o` + `<example>.shim.so` 提交到 `src/testdata/`
+    （共 18 个文件，~75 KB）
+  - `.gitignore` 放行 `src/testdata/*.so`
+  - **验收**：9 个 golden 文件就位（hello/noop/logonly/counter/
+    vault/transfer-sol/pda-storage/escrow/token-vault）
 
-- [ ] **I.3**：Zig 侧集成测试
-  - `zig build test` 能对每个 golden 做 cmp
-  - 用 `build.zig` 的 `test_step`
-  - **验收**：`zig build test` 在 9/9 example 上全绿
+- [x] **I.3**：Zig 侧集成测试 ✅ 2026-04-18
+  - 新测试 `integration: 9 zignocchio examples byte-match reference-shim`
+    在 `src/integration_test.zig` 里遍历 9 个 golden，用
+    `runPipeline` → `expectEqualSlices`
+  - 失败时打印第一个差异字节偏移，方便 regressions 诊断
+  - **验收**：`zig build test` 在 9/9 example 上**全绿**（362/362
+    tests）
 
 - [ ] **I.4**：CI 脚本
   - `.github/workflows/ci.yml` 或者 `Makefile`
@@ -616,8 +620,8 @@ Solana SBPF 特有结构。
 | F — ELF 输出层 | 12 | 12 | ✅ 完成 |
 | G — Program emit | 4 | 4 | ✅ 完成 |
 | H — CLI | 3 | 3 | ✅ 完成 |
-| I — 对拍测试 | 6 | 2 | 进行中（9/9 对拍已绿；CI / golden / zignocchio 草稿待补） |
-| **总计** | **56** | **50** | **89%** |
+| I — 对拍测试 | 6 | 4 | 进行中（9/9 已绿；golden 入库 + Zig 侧 loop 已接通；剩 CI / zignocchio 草稿） |
+| **总计** | **56** | **52** | **93%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

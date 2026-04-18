@@ -23,7 +23,7 @@ const SymTableKind = lib.SymTableKind;
 const RelocType = lib.RelocType;
 
 const hello_bytes = @embedFile("testdata/hello.o");
-const hello_shim_so = @embedFile("testdata/hello-shim.so");
+const hello_shim_so = @embedFile("testdata/hello.shim.so");
 
 test "integration: hello.o parses as valid BPF ELF" {
     const file = try ElfFile.parse(hello_bytes);
@@ -199,4 +199,99 @@ test "integration: hello.o emitBytecode matches reference-shim golden output" {
     // a divergence in byteparser / buildProgram / Program layout.
     try testing.expectEqual(hello_shim_so.len, bytes.len);
     try testing.expectEqualSlices(u8, hello_shim_so, bytes);
+}
+
+// ---------------------------------------------------------------------------
+// I.2 + I.3 — 9-example byte-diff matrix against reference-shim goldens.
+//
+// Each (.o → .shim.so) pair was produced by the reference-shim build and
+// committed under src/testdata/. The Zig pipeline must reproduce the same
+// bytes for every example. This is the C1 acceptance gate.
+// ---------------------------------------------------------------------------
+
+const Golden = struct {
+    name: []const u8,
+    input: []const u8,
+    shim_so: []const u8,
+};
+
+const goldens = [_]Golden{
+    .{
+        .name = "hello",
+        .input = @embedFile("testdata/hello.o"),
+        .shim_so = @embedFile("testdata/hello.shim.so"),
+    },
+    .{
+        .name = "noop",
+        .input = @embedFile("testdata/noop.o"),
+        .shim_so = @embedFile("testdata/noop.shim.so"),
+    },
+    .{
+        .name = "logonly",
+        .input = @embedFile("testdata/logonly.o"),
+        .shim_so = @embedFile("testdata/logonly.shim.so"),
+    },
+    .{
+        .name = "counter",
+        .input = @embedFile("testdata/counter.o"),
+        .shim_so = @embedFile("testdata/counter.shim.so"),
+    },
+    .{
+        .name = "vault",
+        .input = @embedFile("testdata/vault.o"),
+        .shim_so = @embedFile("testdata/vault.shim.so"),
+    },
+    .{
+        .name = "transfer-sol",
+        .input = @embedFile("testdata/transfer-sol.o"),
+        .shim_so = @embedFile("testdata/transfer-sol.shim.so"),
+    },
+    .{
+        .name = "pda-storage",
+        .input = @embedFile("testdata/pda-storage.o"),
+        .shim_so = @embedFile("testdata/pda-storage.shim.so"),
+    },
+    .{
+        .name = "escrow",
+        .input = @embedFile("testdata/escrow.o"),
+        .shim_so = @embedFile("testdata/escrow.shim.so"),
+    },
+    .{
+        .name = "token-vault",
+        .input = @embedFile("testdata/token-vault.o"),
+        .shim_so = @embedFile("testdata/token-vault.shim.so"),
+    },
+};
+
+test "integration: 9 zignocchio examples byte-match reference-shim" {
+    const allocator = testing.allocator;
+
+    for (goldens) |g| {
+        const bytes = runPipeline(allocator, g.input) catch |err| {
+            std.debug.print("[{s}] pipeline failed: {s}\n", .{ g.name, @errorName(err) });
+            return err;
+        };
+        defer allocator.free(bytes);
+
+        if (bytes.len != g.shim_so.len) {
+            std.debug.print(
+                "[{s}] length mismatch: zig={d} shim={d}\n",
+                .{ g.name, bytes.len, g.shim_so.len },
+            );
+            return error.TestExpectedEqual;
+        }
+
+        if (!std.mem.eql(u8, bytes, g.shim_so)) {
+            // Find first differing byte for easier diagnosis.
+            var first_diff: usize = 0;
+            while (first_diff < bytes.len and bytes[first_diff] == g.shim_so[first_diff]) {
+                first_diff += 1;
+            }
+            std.debug.print(
+                "[{s}] byte differ at offset 0x{x}: zig=0x{x:0>2} shim=0x{x:0>2}\n",
+                .{ g.name, first_diff, bytes[first_diff], g.shim_so[first_diff] },
+            );
+            return error.TestExpectedEqual;
+        }
+    }
 }
