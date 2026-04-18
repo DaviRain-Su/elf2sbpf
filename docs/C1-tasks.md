@@ -346,11 +346,13 @@ test` 跑空测试。
     Directive/EquDecl/ExternDecl/RodataDecl 是 text parser only，推迟到 D
   - **验收**：6 单测覆盖所有 variant 构造、分类、字段访问
 
-- [ ] **E.2**：`ast/ast.zig` — AST 结构
-  - `struct { nodes, rodata_nodes, text_size, rodata_size }`
-  - `init`、`setTextSize`、`setRodataSize`
-  - `getInstructionAtOffset(offset) ?*Instruction`
-  - **验收**：构造一个 AST，塞入指令节点，用 offset 查到
+- [x] **E.2**：`ast/ast.zig` — AST 结构 + 查询 API ✅ 2026-04-18
+  - `AST { allocator, nodes, rodata_nodes, text_size, rodata_size }`
+  - `init/deinit/setTextSize/setRodataSize/pushNode/pushRodataNode`
+  - `getInstructionAtOffset(offset) ?*Instruction` — 返回**可变指针**让 E.3 就地改写
+  - `getRodataAtOffset(offset) ?*ROData`
+  - `SbpfArch` enum（V0 / V3；C1 只用 V0）
+  - **验收**：5 单测覆盖所有 API、mutation through pointer
 
 - [ ] **E.3**：`ast/ast.zig` — `buildProgram(SbpfArch.V0)`
   - 第一遍：扫描所有 label 节点，建 `label_offset_map`
@@ -567,12 +569,12 @@ Solana SBPF 特有结构。
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
 | D — Byteparser | 9 | 9 | ✅ 完成 |
-| E — AST | 4 | 1 | 进行中 (25%) |
+| E — AST | 4 | 2 | 进行中 (50%) |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **26** | **46%** |
+| **总计** | **56** | **27** | **48%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
