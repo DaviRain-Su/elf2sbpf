@@ -285,210 +285,9 @@ fn computeSpanEnd(nodes: []const ASTNode, g: Ldxb8Group) usize {
     return stop_at - 1;
 }
 
-/// Verify that a cluster can be rewritten. Returns null on success or a
-/// static reason string for diagnostics / tests on skip.
-fn verifyCluster(nodes: []const ASTNode, g: Ldxb8Group) ?[]const u8 {
-    const span_end = computeSpanEnd(nodes, g);
-    if (span_end < g.last_idx) return "span collapsed";
-
-    var instructions_in_span: usize = 0;
-    var first_byte: u64 = std.math.maxInt(u64);
-    var last_byte: u64 = 0;
-    var final_or_dst: ?u8 = null;
-
-    var i: usize = g.first_idx;
-    while (i <= span_end) : (i += 1) {
-        switch (nodes[i]) {
-            .Label => return "label inside cluster span",
-            .GlobalDecl, .ROData => {}, // don't occur in text image past fromByteParse, but benign
-            .Instruction => |n| {
-                const inst = n.instruction;
-                if (!isClusterBodyOpcode(inst.opcode)) return "foreign opcode inside span";
-                // Track final dst of Or64Reg — that's the register where
-                // the u64 lands after all shifts + merges.
-                if (inst.opcode == .Or64Reg) {
-                    if (inst.dst) |d| final_or_dst = d.n;
-                }
-                instructions_in_span += 1;
-                if (n.offset < first_byte) first_byte = n.offset;
-                if (n.offset + inst.getSize() > last_byte) last_byte = n.offset + inst.getSize();
-            },
-        }
-    }
-
-    // Typical pattern: 22 instructions. Reject anything outside
-    // [18, 30] — same span length but different instruction count
-    // means something unusual is packed in.
-    if (instructions_in_span < 18 or instructions_in_span > 30)
-        return "unusual instruction count inside span";
-    if (final_or_dst == null) return "no Or64Reg to identify final dst";
-
-    if (anyJumpTargetsInside(nodes, first_byte, last_byte))
-        return "jump/call target inside cluster";
-
-    return null;
-}
-
-/// Determine the final destination register for a cluster by scanning
-/// its span for the LAST `Or64Reg` (or the only `Or64Reg` — matches
-/// bpfel -O2 emission where the ultimate merge is the final `or64`).
-fn clusterFinalDst(nodes: []const ASTNode, g: Ldxb8Group, span_end_inclusive: usize) u8 {
-    var final: u8 = 0;
-    var i: usize = g.first_idx;
-    while (i <= span_end_inclusive) : (i += 1) {
-        const inst_node = switch (nodes[i]) {
-            .Instruction => |n| n,
-            else => continue,
-        };
-        if (inst_node.instruction.opcode == .Or64Reg) {
-            if (inst_node.instruction.dst) |d| final = d.n;
-        }
-    }
-    return final;
-}
-
-/// Rewrite a single cluster in place on `ast.nodes`. Deletes all
-/// instructions in `[g.first_idx .. g.last_idx + 6]`, inserts a single
-/// `Ldxdw` at position `g.first_idx`, then renumbers every subsequent
-/// Instruction / Label offset by the byte delta and adjusts every
-/// surviving numeric jump / call that crosses the deleted region.
-///
-/// Returns the net number of instructions removed (e.g. `21` for a
-/// 22→1 rewrite). Panics if verifyCluster would have returned non-null
-/// — caller must call verifyCluster first.
-fn applyRewrite(
-    ast: anytype, // *ast_mod.AST to avoid import cycle
-    g: Ldxb8Group,
-) !usize {
-    const span_first = g.first_idx;
-    const span_last_inclusive = computeSpanEnd(ast.nodes.items, g);
-
-    // Collect bytes to delete + first-instruction offset for the
-    // replacement ldxdw.
-    var del_start_byte: u64 = std.math.maxInt(u64);
-    var del_end_byte: u64 = 0;
-    var insns_removed: usize = 0;
-    var k: usize = span_first;
-    while (k <= span_last_inclusive) : (k += 1) {
-        switch (ast.nodes.items[k]) {
-            .Instruction => |n| {
-                if (n.offset < del_start_byte) del_start_byte = n.offset;
-                const end = n.offset + n.instruction.getSize();
-                if (end > del_end_byte) del_end_byte = end;
-                insns_removed += 1;
-            },
-            else => {},
-        }
-    }
-
-    const dst = clusterFinalDst(ast.nodes.items, g, span_last_inclusive);
-    const new_inst: Instruction = .{
-        .opcode = .Ldxdw,
-        .dst = .{ .n = dst },
-        .src = .{ .n = g.base_reg },
-        .off = .{ .right = g.base_offset },
-        .imm = null,
-        .span = .{ .start = 0, .end = 8 },
-    };
-
-    // Remove span_first..span_last_inclusive (inclusive), insert one
-    // replacement at span_first. ArrayList has no removeRange; do it
-    // manually by shifting.
-    const total_removed: usize = span_last_inclusive - span_first + 1;
-    const new_ldxdw_node: ASTNode = .{
-        .Instruction = .{ .instruction = new_inst, .offset = del_start_byte },
-    };
-    ast.nodes.items[span_first] = new_ldxdw_node;
-    // Shift everything after span_last_inclusive down by (total_removed - 1).
-    var src_i: usize = span_last_inclusive + 1;
-    var dst_i: usize = span_first + 1;
-    while (src_i < ast.nodes.items.len) : (src_i += 1) {
-        ast.nodes.items[dst_i] = ast.nodes.items[src_i];
-        dst_i += 1;
-    }
-    ast.nodes.shrinkRetainingCapacity(dst_i);
-
-    // Renumber: every Label / Instruction with offset >= del_end_byte
-    // decreases by `(del_end_byte - del_start_byte) - 8` bytes (we kept
-    // 8 bytes for the new ldxdw).
-    const byte_delta: u64 = (del_end_byte - del_start_byte) - 8;
-    var idx: usize = 0;
-    while (idx < ast.nodes.items.len) : (idx += 1) {
-        switch (ast.nodes.items[idx]) {
-            .Instruction => |*payload| {
-                if (payload.offset >= del_end_byte) payload.offset -= byte_delta;
-            },
-            .Label => |*payload| {
-                if (payload.offset >= del_end_byte) payload.offset -= byte_delta;
-            },
-            else => {},
-        }
-    }
-    ast.text_size -= byte_delta;
-
-    // Fix up numeric jumps / local calls that cross the deleted region.
-    // The replacement ldxdw occupies bytes [del_start_byte, del_start_byte+8).
-    // A jump from `src_byte` to `target_byte` "crosses" the deletion iff
-    // (a) src < del_start AND target >= del_end_byte, or
-    // (b) src >= del_end_byte AND target <= del_start_byte (backwards jump).
-    // In both cases the instruction-count between src and target shrank
-    // by (total_removed - 1) = 21.
-    const insn_delta: i64 = @intCast(total_removed - 1);
-    idx = 0;
-    while (idx < ast.nodes.items.len) : (idx += 1) {
-        const node = &ast.nodes.items[idx];
-        const payload: *@TypeOf(node.Instruction) = switch (node.*) {
-            .Instruction => |*p| p,
-            else => continue,
-        };
-        // Note: offsets here are already POST-renumber. Compare against
-        // del_start_byte (unchanged) and del_end_byte - byte_delta (the
-        // new post-renumber boundary) — but since the only "inside" span
-        // is now a single ldxdw at del_start_byte, we just need to know
-        // if src and original-target straddle del_start_byte..(del_start_byte+8).
-        const inst = &payload.instruction;
-        const src_byte_post = payload.offset;
-        const is_jump = inst.isJump();
-        const is_local_call = inst.opcode == .Call and
-            (inst.src != null and inst.src.?.n == 1);
-        if (!is_jump and !is_local_call) continue;
-
-        const raw_off: i64 = if (is_jump)
-            (offNumeric(inst.*) orelse continue)
-        else
-            (callImmNumeric(inst.*) orelse continue);
-
-        // Reconstruct original src byte and original target byte. If
-        // src_byte was after del_end_byte, the renumber already shifted
-        // it down — so original src_byte = src_byte_post + byte_delta.
-        const orig_src_byte: i64 = if (src_byte_post >= del_start_byte)
-            @as(i64, @intCast(src_byte_post)) + @as(i64, @intCast(byte_delta))
-        else
-            @as(i64, @intCast(src_byte_post));
-        const orig_target_byte: i64 = orig_src_byte + 8 + raw_off * 8;
-
-        const d_start: i64 = @intCast(del_start_byte);
-        const d_end: i64 = @intCast(del_end_byte);
-        const crosses_forward = orig_src_byte < d_start and orig_target_byte >= d_end;
-        const crosses_backward = orig_src_byte >= d_end and orig_target_byte <= d_start;
-        if (!crosses_forward and !crosses_backward) continue;
-
-        const new_off = if (crosses_forward) raw_off - insn_delta else raw_off + insn_delta;
-        if (is_jump) {
-            inst.off = .{ .right = @intCast(new_off) };
-        } else {
-            inst.imm = .{ .right = .{ .Int = new_off } };
-        }
-    }
-
-    return total_removed - 1;
-}
-
-/// Check whether another cluster's ldxb_node_indices overlap with
-/// `g`'s span `[first_idx..span_end_inclusive]`. If so the two clusters
-/// are interleaved — V2.0 handled this by skipping both; V2.1 now
-/// groups interleaved clusters into super-clusters and rewrites them
-/// together.
+/// Check whether two clusters overlap — either's span contains any of
+/// the other's ldxb nodes. If so, they're interleaved and must be
+/// rewritten together as a super-cluster (or both skipped).
 fn clustersInterleaved(
     nodes: []const ASTNode,
     a: Ldxb8Group,
@@ -895,23 +694,12 @@ pub fn rewriteAll(
     var total_insn_delta: usize = 0;
 
     for (comps.items) |comp| {
-        if (comp.members.len == 1) {
-            // Single-cluster path — reuse V2.0 logic.
-            const g = report.groups[comp.members[0]];
-            if (verifyCluster(ast.nodes.items, g) != null) {
-                skipped += 1;
-                continue;
-            }
-            const removed = applyRewrite(ast, g) catch {
-                skipped += 1;
-                continue;
-            };
-            total_insn_delta += removed;
-            rewritten += 1;
-            continue;
-        }
-
-        // Super-cluster path (V2.1).
+        // Uniform path: every component — singleton or super — goes
+        // through the taint-matched rewrite. Singletons just have one
+        // member. This is stricter and safer than V2.0's
+        // `clusterFinalDst` heuristic ("last Or64Reg in span"), which
+        // mismatched on token's .o where the span can end with an
+        // unrelated Or64Reg from a neighboring computation.
         var super_first: usize = std.math.maxInt(usize);
         var super_last: usize = 0;
         var member_clusters_buf: [16]Ldxb8Group = undefined;
@@ -1012,29 +800,13 @@ pub fn rewriteAll(
             } else |_| {}
         }
 
-        // Fallback: super-cluster path failed. Try rewriting each
-        // member independently via the V2.0 single-cluster path. This
-        // ensures V2.1 is never strictly worse than V2.0 — any member
-        // that V2.0 could have handled as a singleton still gets done.
-        //
-        // NB: after a successful rewrite, subsequent members' node
-        // indices are stale; we re-scan to recover accurate groups.
-        // Rather than do that here, just try the first member and let
-        // the outer caller run rewriteAll again if needed (idempotent
-        // up to a fixed point). For now this one-shot fallback already
-        // recovers the vault regression.
-        var fallback_rewrote: usize = 0;
-        for (members) |g| {
-            if (verifyCluster(ast.nodes.items, g) != null) continue;
-            const removed = applyRewrite(ast, g) catch continue;
-            total_insn_delta += removed;
-            fallback_rewrote += 1;
-            // Indices of remaining members are now stale; only attempt
-            // the first safe one per super-cluster per pass.
-            break;
-        }
-        rewritten += fallback_rewrote;
-        skipped += members.len - fallback_rewrote;
+        // Super-cluster path failed. We *cannot* safely fall back to
+        // per-member V2.0 rewriting here: the members are mutually
+        // interleaved (that's why we grouped them), so rewriting any
+        // one of them would delete the others' ldxb data paths and
+        // corrupt the program. Skip them all and let the next pass or
+        // the user decide.
+        skipped += comp.members.len;
     }
 
     return .{

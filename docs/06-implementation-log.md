@@ -3308,6 +3308,67 @@ r3 = 0x0
 无。V2.1 是 V2.0 的纯 superset；`linkProgramOptimized` 公开 API
 行为跟 V2.0 向后兼容（只会省更多、不会少省），默认路径行为不变。
 
+---
+
+## D.7.10 V2.1a — miscompile fix on complex programs ✅
+
+**日期**：2026-04-18
+**状态**：✅ 修复（token SPL 回归 → 6/6 pass）
+
+### 触发
+
+用户跑 solana-program-rosetta 新增的 token SPL 测试套件，发现 V2.1
+在 token 上产生 miscompile：6 个操作中 3 个（burn / mint_to /
+transfer）fail，返回 `custom program error: 0x5` (OwnerMismatch)。
+其它程序（helloworld / transfer-lamports / pubkey / cpi）都正常。
+
+### 根因
+
+V2.0 的单 cluster 路径用 `clusterFinalDst` heuristic 选目标 reg：
+"span 里最后一个 `Or64Reg` 的 dst"。在简单程序（pubkey / transfer）
+里这个启发式碰巧对，因为 span 收尾就是 pattern 的最终 merge `or64`。
+但 token 有密集的 Pubkey 比较（owner / mint / authority 校验），
+cluster 之间紧挨着，有些 cluster 的 span 收尾是另一个 cluster 的
+中间 `or64`——heuristic 选错，产生的 `ldxdw` 写错了寄存器，导致
+后续比较结果错误 → 返回 OwnerMismatch。
+
+### 做的事
+
+**统一路径**：删掉 V2.0 的 `applyRewrite` / `clusterFinalDst` /
+`verifyCluster`，让 singletons 和 supers 都走 V2.1 的 taint-matched
+`applyRewriteSuper` 路径。taint propagation 精确追踪每个 reg 从
+哪些 `(base_reg, offset)` 来；matchClustersToRegs 只匹配 mask 正好
+`0xff` 的目标 reg——不会被无关 Or64Reg 误导。
+
+代码：`src/ast/peephole.zig` 删除 ~230 行（旧 V2.0 代码 +
+unused helpers），新增 ~15 行统一路径。
+
+### 收益
+
+**所有 3 个之前 fail 的 token 操作都 pass**，CU 相对老 README 里
+的数字全线下降：
+
+| 操作 | 老 README | V2.1a | Δ |
+|------|----------|-------|---|
+| Initialize Mint | 516 | 474 | -8% |
+| Initialize Account | 491 | 365 | -26% |
+| Mint To | 448 | 364 | -19% |
+| Transfer | 572 | 486 | -15% |
+| Burn | 452 | 280 | **-38%** |
+| Close Account | 236 | 194 | -18% |
+
+其它程序 CU 保持 V2.1 水平：
+- helloworld: 105 CU（跟 solana-zig 持平）
+- transfer-lamports: 39 CU（基线 37）
+- cpi: 2818 CU（基线 2967，**我们更好**）
+- pubkey: 19 CU（基线 15）
+
+### 测试
+
+- 398/398 tests pass（无新增，V2.0 的旧测试失效删除）
+- 9 个 V0 solana-zig goldens 默认路径字节对等 100% 保留
+- solana-program-rosetta 5 个程序（含 token 6 op）全部 pass
+
 
 
 
