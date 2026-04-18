@@ -1,0 +1,177 @@
+# D 阶段任务清单（功能扩展）
+
+**目标**：按生态需求逐个补足 out-of-scope 功能。**不固定时间表**，
+按用户反馈 / 上游 PR / 实际使用痛点驱动。
+
+**在 dev-lifecycle 中的位置**：
+
+- ⬅️ 前置输入：C1 + C2 全部完成，v0.1.0 已发
+- ➡️ 每个 D.x 子任务**单独走一遍 Phase 3（技术规格）+ Phase 4（拆解）**；
+  不像 C1/C2 一次性拉一个清单就开干
+
+**原则**：
+- 每个 D.x 独立（不要混在一起做）；完成后发 v0.2 / v0.3 /... release
+- 保底：9/9 zignocchio golden 不能破；fuzz-lite 跑 100 轮 0 DIFFER
+- 从小到大：先做 ergonomics / 结构性补齐，后做大工程（V3 / Windows）
+
+---
+
+## 优先级排序（我的推荐）
+
+| 优先级 | 任务 | 估时 | 理由 |
+|--------|------|------|------|
+| **P0** | **D.2 Debug info 保留** | 1-2 天 | 最小投入；`DebugSection` writer 已在 F.11 就位；只需接通 `Program::fromParseResult` 的 reuse 路径 + 一个带 debug 的测试 fixture。对 gdb/lldb 用户立即有价值 |
+| **P1** | **D.4 Zig 库 API** | 1 天 | 低风险、高 DX 价值；zignocchio PR 合并后会吸引 Zig 框架作者来用 elf2sbpf；把 `linkProgram` / `Program.fromParseResult` 等作为公开 API 抛出来 + build.zig.zon 支持 `zig fetch` |
+| **P2** | **D.3 Dynamic syscall relocation** | 1-2 天 | 把 `REGISTERED_SYSCALLS` 那个静态表换成 runtime-extensible；允许 zignocchio 框架 register 自己的 syscall |
+| **P3** | **D.1 SbpfArch V3 路径** | 1-2 周 | 最大投入；Solana runtime 主推 V3 时必须做；但 V0 短期不会被淘汰 |
+| **P4** | **D.5 Windows 支持** | 3-5 天 | Zig 本身跨平台；主要踩 path / file I/O 的坑；受众小 |
+| **战略** | **D.6 跨语言前端** | — | 等社区有人问再做（PRD 说"扩展自然发生，不是先做好等人来用"） |
+
+---
+
+## D.2 — Debug info 保留
+
+**动机**：目前 elf2sbpf 直接 drop 所有 `.debug_*` sections，导致
+部署后的 `.so` 不能 gdb/lldb 调试。Rust sbpf-assembler 有
+`reuse_debug_sections` 路径，`DebugSection` writer 在 F.11 已经
+就位，只差把 Program.fromParseResult 的那条 dispatch 接上。
+
+**预估**：1-2 天
+
+**前置状态**（已就位）：
+- ✅ `src/emit/section_types.zig` 的 `DebugSection` writer
+- ✅ `src/emit/program.zig` 的 `SectionType.debug` union variant
+- ✅ byteparser 的 `scanDebugSections` → `DebugScan`
+- ✅ AST 的 `ParseResult.debug_sections` 字段
+- ❌ Program.layoutV0Dynamic / layoutV3 / layoutV0Static 里对
+  `pr.debug_sections` 的 reuse 逻辑（G.2 当时明确 defer 了）
+- ❌ 带 debug_* 的测试 fixture
+
+### 子任务
+
+- [ ] **D.2.1**：研究 Rust `reuse_debug_sections`
+  - 读 `~/.cargo/registry/src/.../sbpf-assembler-0.1.8/src/debug.rs`
+  - 画出 section-names 注册顺序、offset 分配规则、sh_link 关系
+  - **产物**：`docs/D2-debug-notes.md`（内部笔记）
+
+- [ ] **D.2.2**：`layoutV0Dynamic` / `layoutV3` / `layoutV0Static`
+  分别加 debug reuse 循环
+  - 每个 debug section 分配 name_offset + offset，设 setNameOffset
+    / setOffset；append 到 self.section_names 和 self.sections
+  - 在 shstrtab 之前插入（Rust 的顺序）
+  - 更新 e_shoff 计算（debug sections 贡献 size）
+
+- [ ] **D.2.3**：测试 fixture
+  - 选 zignocchio 的 hello；用 `-O Debug` 而不是 `-O ReleaseSmall`
+    重新构建 → 产生带 `.debug_*` 的 `.o`
+  - 用 reference-shim 产物作为 golden → `src/testdata/hello-debug.o
+    + .shim.so`
+  - `integration_test.zig` 加一条 byte-diff，确保 debug section
+    被正确保留
+
+- [ ] **D.2.4**：运行时烟测
+  - `gdb` attach 到 `.so` 产物（通过 solana-test-validator 或者
+    litesvm）；确认 source-line mapping 能 resolve
+  - 非硬性要求；若 ADR-001 决策继续有效则 skip
+
+- [ ] **D.2.5**：文档 + release notes
+  - `CHANGELOG.md` `[0.2.0]` 条目
+  - `docs/pipeline.md` 提一下 debug info 默认保留
+  - 发 v0.2.0 release
+
+### 验收
+
+- 带 debug 的 hello.o 跑管道后，shim 产物 cmp 通过
+- 9/9 原 golden 仍然 MATCH（debug 无 embed 的情况不变）
+- fuzz-lite 100 轮全绿
+
+---
+
+## D.4 — Zig 库 API（draft）
+
+**动机**：zignocchio 上游 PR 一合，Zig 框架作者会来用 elf2sbpf。
+目前 CLI 的形式需要子进程调用（`b.addSystemCommand(...)`），这是
+我在 zignocchio build.zig 草稿里的做法。更优雅的是：让
+`build.zig.zon` 能直接 `zig fetch https://...elf2sbpf...`，然后
+在 build.zig 里 import 成 module 调用。
+
+**预估**：1 天
+
+### 子任务（粗稿）
+
+- [ ] **D.4.1**：公开 `lib.zig` 的 `linkProgram` + `Program` +
+  `LinkError` 作为 stable API
+- [ ] **D.4.2**：`build.zig.zon` 补一个 exposed module 配置
+- [ ] **D.4.3**：在 zignocchio `build.zig` 草稿里加 `-Dlinker=zig-import`
+  路径（直接 import elf2sbpf module，不走子进程）
+- [ ] **D.4.4**：API 稳定性文档（`docs/library.md`），标注
+  v0.x 期间接口可能变
+
+### 验收
+
+- zignocchio 的 `build.zig.zon` 能 `zig fetch`
+- `zig build -Dlinker=zig-import` 产物跟 `-Dlinker=elf2sbpf`（子进程
+  路径）字节一致
+
+---
+
+## D.1 — SbpfArch V3（大工程占位）
+
+**动机**：Solana runtime 正在推 V3 作为新默认（static relocation、
+更快 loader、fixed vaddr）。我们 C1 只做了 V0；V3 是扩展方向。
+
+**预估**：1-2 周
+
+### 为什么不是 P0
+
+- V0 向后兼容，短期不会被 runtime 淘汰
+- zignocchio 当前所有 example 都是 V0
+- V3 需要碰 byteparser（没有 dynamic relocation）、AST（不同的
+  syscall resolution）、emit（不同的 ELF 布局）——三层都要改
+- 没有 V3 产物的 reference-shim 对拍目标（`reference-shim/` 只
+  处理 V0 管道）
+
+### 启动条件
+
+- zignocchio 或其他用户请求支持
+- 或者 Solana runtime 官方公告 V3 作为 default
+
+真开始做时，另开 `docs/D1-v3-tasks.md`，按 dev-lifecycle 重新走
+Phase 3/4/5。
+
+---
+
+## 其他 D 任务
+
+- **D.3 Dynamic syscall relocation**：当前 `REGISTERED_SYSCALLS`
+  是静态 30 条；要支持 runtime-extensible 得引入 DynamicSyscallMap
+  + 允许调用方在 `linkProgram` 参数里注入自定义 syscall 表
+- **D.5 Windows**：未验证；Zig 理论上跨平台。主要是 path
+  separator + file I/O 的 regression
+- **D.6 跨语言前端**：战略愿景，不排期
+
+---
+
+## 进度汇总
+
+| 任务 | 状态 |
+|------|------|
+| D.1 V3 arch | 未开始（等触发条件） |
+| D.2 Debug info | 未开始（**推荐 P0**） |
+| D.3 Dynamic syscall | 未开始 |
+| D.4 Zig 库 API | 未开始（**推荐 P1**） |
+| D.5 Windows | 未开始 |
+| D.6 跨语言 | 战略愿景，不排期 |
+
+---
+
+## 当前最有价值的一步
+
+在我看来 **D.2 Debug info 保留** 是 P0：
+- 投入最小（1-2 天），代码基础已经就位
+- 对 gdb/lldb 用户立即有价值
+- 不破坏任何已有 golden
+- 推完 D.2 刚好有一个 v0.2.0 的小 release，延续 C1/C2 的节奏
+
+如果用户倾向 D.4（DX / 上游集成深化）、D.1（V3 提前布局）或
+D.3（syscall 扩展），告诉我即可切换。
