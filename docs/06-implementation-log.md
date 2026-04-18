@@ -2829,6 +2829,71 @@ release 时不删 Rust shim，作为 ADR-001 兜底 oracle 持续在位。
 **都涉及跨仓库或对外动作**，需要用户批准。到这里暂停等用户
 意见。
 
+---
+
+## C2-D.1/D.2/D.3：zignocchio 上游 Draft PR ✅
+
+**日期**：2026-04-18
+**PR 链接**：https://github.com/Solana-ZH/zignocchio/pull/1（DRAFT）
+**commit**：待推送（elf2sbpf repo 侧的 C2-tasks.md 更新）
+
+### 做了什么
+
+用户批"1"（直接推到 Solana-ZH/zignocchio，不 fork）之后：
+
+1. **D.1 打磨**：本地跑 9/9 example 全部 MATCH committed goldens
+   通过新 build.zig（`zig build -Dexample=X` 默认用 elf2sbpf）
+2. **D.2 + D.3 一起提 PR**：
+   - 分支 `feat/elf2sbpf-backend` pushed to `origin`（push 权限在
+     davirain）
+   - 2 个 commit：
+     - `build: support elf2sbpf as default back-end, sbpf-linker
+       as fallback`（+117/-54）
+     - `docs: document elf2sbpf as default, sbpf-linker as
+       fallback`（+71/-15）
+   - Draft PR: title + body 走 `/tmp/zignocchio-pr/PR-BODY.md`，
+     包含 Motivation / What changes / Rollback / Validation /
+     Out of scope / Related
+
+### 提交前验证
+
+| 项目 | 结果 |
+|------|------|
+| 9/9 example 通过新 build.zig 产出 byte-identical .so | ✅ |
+| `-Dlinker=sbpf-linker` 回退保留 legacy 行为 | ✅（macOS 限制不变） |
+| PR body 覆盖 motivation/rollback/validation/scope | ✅ |
+| gh pr create --draft 成功 | ✅ |
+
+### Draft 状态说明
+
+留 Draft 是刻意的：让 zignocchio maintainer 先 review；合并前
+对方可能会要求：
+- 跑 npm test / 整合 CI
+- 调整 `-Dlinker` 默认值（如果他们想保 sbpf-linker 作默认）
+- 改 README 某些措辞
+
+用户可以随时 `gh pr ready 1 --repo Solana-ZH/zignocchio` 转成
+Ready-for-review。
+
+### D.4 决定
+
+用户在批准时明确"D.4 不做先"——blueshift-gg/sbpf 的 rodata
+gap-fill issue 推迟（可能 C3+ 再看；目前没阻塞任何事）。
+
+### C2 进度更新
+
+- Epic A: 4/4 ✅
+- Epic B: 3/3 ✅
+- Epic C: 3/3 ✅（决策完成）
+- Epic D: 3/4（D.4 不做）
+- **C2 总计 13/18（72%）**
+
+### 下一任务
+
+**Epic E — v0.1.0 release**。E.3（归档 reference-shim）已在
+ADR-002 决定保留。剩 E.1/E.2/E.4。E.1/E.2（git tag + GitHub
+Release + 下载验证）仍需用户批准再执行——涉及 public release。
+
 
 
 
