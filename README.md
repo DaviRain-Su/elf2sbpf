@@ -51,10 +51,15 @@ your existing `build.zig`), then run:
 
 ```bash
 zig build -Dexample=hello
+
+# optional: in-process Zig dependency mode
+zig build -Dexample=hello -Dlinker=zig-import
 ```
 
 This removes the need for `cargo install sbpf-linker`, `LD_LIBRARY_PATH` hacks,
-and `libLLVM.so.20` symlink workarounds.
+and `libLLVM.so.20` symlink workarounds. The default path uses the `elf2sbpf`
+CLI; `-Dlinker=zig-import` is also available if you want to consume elf2sbpf as
+an in-process Zig dependency.
 
 ## What it does — and what it does not do
 
