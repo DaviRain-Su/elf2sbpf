@@ -87,4 +87,15 @@ _按 phase 顺序追加；每条格式：`[P{N}] severity · 位置 · 描述 ·
 
 **Phase 2 小结**：4 处 user-facing docs 状态漂移（主要是 status 停留在 C2 时代），以及一些 task-list 的完成度没同步。README / pipeline / library 现在跟 v0.5.0 对齐；Zh/En parity 保持。无 broken links。
 
+### Phase 3 findings（2026-04-18 第 3 轮）
+
+| # | severity | 位置 | 描述 | 行动 |
+|---|----------|------|------|------|
+| 3.1 | medium | `.github/workflows/ci.yml` | 不跑 `zig fmt --check`（phase 1 findings 里提过） | ✅ 加到 CI steps 首位；本地先跑过，`zig fmt --check src build.zig` 已绿 |
+| 3.2 | low | `.github/workflows/ci.yml` smoke test | 只跑 V0 hello.o，不测 V3 back-end | ✅ 加 `--v3` smoke 步 |
+| 3.3 | low | `src/lib.zig` 错误路径测试 | 只有 1 条"rejects non-ELF" 测试；`linkProgramV3` / `linkProgramWithSyscalls` / short-buffer 没覆盖 | ✅ 加 3 条：V3/extras 入口的 non-ELF + ELF magic 但过短的 buffer |
+| 3.4 | info | 每文件 test/loc 分布扫描 | `program.zig` 10 tests / 973 lines 看着稀，但三个 layout 函数实际被 10 goldens 覆盖；`opcode.zig` 5 tests / 463 lines 但 opcode 是 116-variant enum，用 inline-for round-trip 覆盖掉了；不属于真缺口 | 无需行动 |
+
+**Phase 3 小结**：CI 加两个保护网（`zig fmt --check` + V3 smoke），防止格式漂移和 V3 入口 regression。`linkProgramV3` / `linkProgramWithSyscalls` 获得 error-path 直接覆盖。376/376 tests 绿（原 370 + 6）。
+
 

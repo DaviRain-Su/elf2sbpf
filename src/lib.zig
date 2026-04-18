@@ -225,6 +225,28 @@ test "linkProgram rejects non-ELF bytes with InvalidElf" {
     try std.testing.expectError(LinkError.InvalidElf, result);
 }
 
+test "linkProgramV3 rejects non-ELF bytes with InvalidElf" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(LinkError.InvalidElf, linkProgramV3(allocator, &.{}));
+}
+
+test "linkProgramWithSyscalls rejects non-ELF bytes with InvalidElf" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(
+        LinkError.InvalidElf,
+        linkProgramWithSyscalls(allocator, &.{}, &.{"sol_custom"}),
+    );
+}
+
+test "linkProgram rejects a short ELF-looking buffer" {
+    // 16 bytes starting with the ELF magic but nothing useful after — the
+    // header parse should still reject this as InvalidElf rather than
+    // crashing on OOB reads.
+    const allocator = std.testing.allocator;
+    const bytes = [_]u8{ 0x7f, 'E', 'L', 'F' } ++ ([_]u8{0} ** 12);
+    try std.testing.expectError(LinkError.InvalidElf, linkProgram(allocator, &bytes));
+}
+
 test "LinkError has all required variants" {
     // Spec compliance: every error listed in 03-technical-spec.md §1.3 must
     // exist in this enum. @errorName forces the compiler to resolve each
