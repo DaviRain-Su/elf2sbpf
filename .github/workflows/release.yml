@@ -39,10 +39,14 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Sanity — tests + fmt
-        run: |
-          zig fmt --check src build.zig
-          zig build test --summary all
+      # Run tests as a sanity check before shipping. We deliberately
+      # do NOT run `zig fmt --check` here — the release workflow
+      # should build from whatever the tagged commit has, and
+      # formatting drift is a main-branch gate (see ci.yml) rather
+      # than a historical-tag requirement. Older tags (v0.1-v0.5)
+      # predate the fmt-check CI step and were still valid releases.
+      - name: Sanity — tests
+        run: zig build test --summary all
 
       - name: Build three artifacts (ReleaseSafe, stripped)
         run: |
