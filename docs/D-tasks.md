@@ -208,8 +208,8 @@ V3 产物普遍比 V0 小 —— 少了 dynamic/dynsym/dynstr/rel.dyn 四个 sec
 | D.1 V3 arch | ✅ 完成，v0.5.0 已发 |
 | D.2 Debug info | ✅ 完成，v0.2.0 已发 |
 | D.3 Dynamic syscall | ✅ 完成，v0.4.0 已发 |
-| D.4 Zig 库 API | ✅ 完成（infra + docs；v0.3.0 release 进行中） |
-| D.5 Windows | 未开始 |
+| D.4 Zig 库 API | ✅ 完成，v0.3.0 已发 |
+| D.5 Windows | 未开始（等用户报需求） |
 | D.6 跨语言 | 战略愿景，不排期 |
 
 ---

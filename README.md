@@ -8,22 +8,27 @@ programs **without installing Rust, `sbpf-linker`, or a separate LLVM toolchain*
 
 ## Status
 
-**Stage: C1 MVP completed (2026-04-18); C2 (integration & upstreaming) in progress**
+**Latest release: [v0.5.0](https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.5.0) — SbpfArch V3 end-to-end (2026-04-18)**
 
-Current repository status:
+All C1 / C2 / D-stage targets are shipped:
 
 - `zig build` ✅
-- `zig build test --summary all` ✅ (362/362 tests, including the 9-example byte-diff loop)
-- `./scripts/validate-zig.sh` ✅ (all 9 zignocchio examples MATCH `reference-shim`)
+- `zig build test --summary all` ✅ (370/370 tests: unit + V0 9-example sweep + V3 9-example sweep + debug-info + fuzz-lite)
+- `./scripts/validate-zig.sh` ✅ (9 zignocchio examples MATCH `reference-shim`)
 - GitHub Actions CI ✅ (`ubuntu-latest` + `macos-latest`)
-- `linkProgram()` and the CLI are fully wired; `elf2sbpf input.o output.so` works directly
-- zignocchio integration draft: `docs/integrations/zignocchio-build.zig` (verified end-to-end MATCH)
+- `linkProgram` / `linkProgramV3` / `linkProgramWithSyscalls` library API + CLI with `--v0` / `--v3` flags
+- zignocchio upstream Draft PR: [Solana-ZH/zignocchio#1](https://github.com/Solana-ZH/zignocchio/pull/1)
 
-**C2 roadmap**: fuzz-lite regression guardrail / litesvm runtime validation /
-zignocchio upstream PR / v0.1.0 release. See `docs/C2-tasks.md`.
+**Supported targets**: SBPF **V0** (default) and **V3** (since v0.5.0). Byte-identical
+to `reference-shim` on all 9 zignocchio examples for both arches (+ a
+debug-info fixture under V0).
+
+**Release history**: v0.1 (C1+C2 MVP) → v0.2 (debug info) → v0.3 (Zig library API)
+→ v0.4 (custom syscall registry) → v0.5 (V3 arch).
 
 For full background, see `docs/C0-findings.md`. For execution details, see
-`docs/C1-tasks.md`, `docs/C2-tasks.md`, and `docs/06-implementation-log.md`.
+`docs/C1-tasks.md`, `docs/C2-tasks.md`, `docs/D-tasks.md`,
+`docs/06-implementation-log.md`, and `docs/decisions.md` (ADRs).
 
 ## Install & Use
 

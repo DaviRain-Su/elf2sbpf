@@ -240,7 +240,7 @@ D 需要用户同意后再执行。E 的时机是 A+B+C 完成后。
 | A — 内部收尾 | 4 | 4 | ✅ 完成 |
 | B — Fuzz-lite | 3 | 3 | ✅ 完成（160/160 MATCH） |
 | C — Runtime 验证 | 3 | 3 | ✅ 已决定 不实施（被字节对等传递覆盖） |
-| D — 上游集成 | 4 | 3 | 进行中（Draft PR 已开：Solana-ZH/zignocchio#1；D.4 不做） |
+| D — 上游集成 | 4 | 3 | ✅ 完成（Draft PR 已开：Solana-ZH/zignocchio#1；D.4 blueshift-gg issue 用户决定不做） |
 | E — 发布 | 4 | 4 | ✅ 完成（E.4 用户决定不做） |
 | **总计** | **18** | **17** | **94%** |
 

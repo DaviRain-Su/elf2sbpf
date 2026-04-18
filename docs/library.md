@@ -7,8 +7,9 @@ the CLI binary — the whole build graph stays in one process.
 ## Add it as a dependency
 
 ```bash
-# In your project root
-zig fetch --save git+https://github.com/DaviRain-Su/elf2sbpf#v0.3.0
+# In your project root (pin to whichever release you want;
+# v0.5.0 is the latest as of this document).
+zig fetch --save git+https://github.com/DaviRain-Su/elf2sbpf#v0.5.0
 ```
 
 This appends an entry to your `build.zig.zon`:
@@ -16,7 +17,7 @@ This appends an entry to your `build.zig.zon`:
 ```zig
 .dependencies = .{
     .elf2sbpf = .{
-        .url = "git+https://github.com/DaviRain-Su/elf2sbpf#v0.3.0",
+        .url = "git+https://github.com/DaviRain-Su/elf2sbpf#v0.5.0",
         .hash = "...",  // filled in by `zig fetch --save`
     },
 },
@@ -115,6 +116,7 @@ SemVer (no breaking changes within v0.x):
 | Symbol | Shape | Stable? |
 |---|---|---|
 | `elf2sbpf.linkProgram(allocator, elf_bytes)` | `LinkError![]u8` | ✅ yes |
+| `elf2sbpf.linkProgramV3(allocator, elf_bytes)` | `LinkError![]u8` | ✅ yes (since v0.5.0) |
 | `elf2sbpf.linkProgramWithSyscalls(allocator, elf_bytes, extras)` | `LinkError![]u8` | ✅ yes (since v0.4.0) |
 | `elf2sbpf.LinkError` | error set | ✅ yes |
 | `elf2sbpf.Program` | struct (read-only) | ✅ for inspection |

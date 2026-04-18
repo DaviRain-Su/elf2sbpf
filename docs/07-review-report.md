@@ -73,3 +73,18 @@ _按 phase 顺序追加；每条格式：`[P{N}] severity · 位置 · 描述 ·
 **Phase 1 小结**：4 处真实漂移（都是 stale 注释 + fmt 漂），全部修完或排期。没发现死代码 / `@panic` / `unreachable` / 未处理 error 的路径。C1-era 标注为 deferred 的点（`fromByteParse`, debug reuse, syscall lookup）都已真实落地；注释已同步。
 
 <!-- phase-1 end -->
+
+### Phase 2 findings（2026-04-18 第 2 轮）
+
+| # | severity | 位置 | 描述 | 行动 |
+|---|----------|------|------|------|
+| 2.1 | low | `README.en.md` | 7 行"forwarder"文件 `README.md` is now English | ✅ 删除（无外部引用） |
+| 2.2 | medium | `README.md` / `README.zh.md` Status 段 | 仍说 "C1 MVP completed; C2 in progress"，列 362 tests，C2 roadmap 含 "v0.1.0 release" (pending)；事实是 v0.5.0 已发，5 个 release，370 tests | ✅ 重写 Status + 新增 "Release history" 一行；Zh/En 同步 |
+| 2.3 | low | `docs/pipeline.md` + `docs/pipeline.zh.md` | elf2sbpf CLI 描述 "extra flags can be added later"；没提 `--v3` | ✅ 扩展成"CLI 签名 + V0/V3 解释"；两语言都改 |
+| 2.4 | low | `docs/library.md` | `zig fetch --save` 示例 pin 到 v0.3.0；stable-API 表缺 `linkProgramV3` | ✅ 改 pin 到 v0.5.0 + 加 V3 entry |
+| 2.5 | info | `docs/C2-tasks.md` / `docs/D-tasks.md` 进度汇总表 | "Epic D 3/4 进行中" / "v0.3.0 release 进行中" / D.4 Zig 库 API 标记 "进行中" 等过期字样 | ✅ 统一改成 "✅ 完成" 或明确 "等用户需求" |
+| 2.6 | good | 所有 markdown 文件 | 脚本扫 inter-doc 链接：**0 broken links** | 无需行动 |
+
+**Phase 2 小结**：4 处 user-facing docs 状态漂移（主要是 status 停留在 C2 时代），以及一些 task-list 的完成度没同步。README / pipeline / library 现在跟 v0.5.0 对齐；Zh/En parity 保持。无 broken links。
+
+

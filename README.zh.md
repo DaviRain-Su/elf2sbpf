@@ -8,22 +8,28 @@
 
 ## 状态
 
-**阶段：C1 MVP 已达成（2026-04-18）；C2（集成 & 上游）进行中**
+**最新 release：[v0.5.0](https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.5.0) —— SbpfArch V3 端到端（2026-04-18）**
 
-当前仓库状态：
+C1 / C2 / D 阶段所有目标已交付：
 
 - `zig build` ✅
-- `zig build test --summary all` ✅（362/362 tests，含 9 example byte-diff loop）
+- `zig build test --summary all` ✅（370/370 tests：单元 + V0 9-example sweep + V3 9-example sweep + debug-info + fuzz-lite）
 - `./scripts/validate-zig.sh` ✅（zignocchio 9/9 example 和 `reference-shim` MATCH）
 - GitHub Actions CI ✅（ubuntu-latest + macos-latest）
-- `linkProgram()` / CLI 已接通，`elf2sbpf input.o output.so` 可直接使用
-- zignocchio 集成草稿：`docs/integrations/zignocchio-build.zig`（实测端到端 MATCH）
+- 库 API：`linkProgram` / `linkProgramV3` / `linkProgramWithSyscalls`；CLI 带
+  `--v0` / `--v3` flag
+- zignocchio 上游 Draft PR：[Solana-ZH/zignocchio#1](https://github.com/Solana-ZH/zignocchio/pull/1)
 
-**C2 路线图**：fuzz-lite 回归防线 / litesvm 运行时验证 / zignocchio 上游 PR
-/ v0.1.0 release。详见 `docs/C2-tasks.md`。
+**支持 target**：SBPF **V0**（默认）和 **V3**（自 v0.5.0）。对 9 个 zignocchio
+example 两种 arch 下的产物都跟 `reference-shim` 字节一致（+ V0 下一个 debug-info
+fixture）。
+
+**版本脉络**：v0.1（C1+C2 MVP）→ v0.2（debug info）→ v0.3（Zig 库 API）→
+v0.4（自定义 syscall registry）→ v0.5（V3 arch）。
 
 完整背景见 `docs/C0-findings.md`；执行细节见 `docs/C1-tasks.md` /
-`docs/C2-tasks.md` / `docs/06-implementation-log.md`。
+`docs/C2-tasks.md` / `docs/D-tasks.md` / `docs/06-implementation-log.md` /
+`docs/decisions.md`（ADR）。
 
 ## 安装 & 使用
 

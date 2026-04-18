@@ -108,9 +108,19 @@ Stage 3 纯 Zig，不碰 LLVM，不碰 Rust。这是 elf2sbpf 真正的领地。
 
 ### elf2sbpf 阶段
 
-具体参数留给 C1 定义。`reference-shim/` 的 shim 接受
-`input.o output.so` 两个位置参数——Zig 港会先匹配这个接口，需要
-额外 flag 时再加。
+```
+elf2sbpf [--v0 | --v3] <input.o> <output.so>
+```
+
+- 位置参数：输入 BPF ELF、输出 Solana SBPF `.so`
+- `--v0`（默认）产出 V0 layout（动态链接，带 PT_DYNAMIC +
+  dynsym/dynstr/rel.dyn）
+- `--v3`（v0.5.0 起）产出 V3 静态 layout（固定 vaddr、无
+  PT_DYNAMIC、静态 syscall 解析 —— 产物更小）
+
+如果在 Zig 里直接 `@import("elf2sbpf")`，调用
+`linkProgram` / `linkProgramV3` / `linkProgramWithSyscalls` ——
+详见 [`docs/library.md`](library.md)。
 
 ## LLVM 到底在哪里
 

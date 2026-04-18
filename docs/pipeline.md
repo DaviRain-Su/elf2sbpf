@@ -107,9 +107,19 @@ Stage 3 is pure Zig: no LLVM, no Rust. This is elf2sbpf's actual domain.
 
 ### elf2sbpf stage
 
-The exact CLI shape is defined in C1. The shim under `reference-shim/` accepts
-`input.o output.so` as two positional arguments, and the Zig port matches that
-interface first; extra flags can be added later if needed.
+```
+elf2sbpf [--v0 | --v3] <input.o> <output.so>
+```
+
+- Positional args: input BPF ELF, output Solana SBPF `.so`
+- `--v0` (default) emits the V0 layout (dynamic linking, PT_DYNAMIC +
+  dynsym/dynstr/rel.dyn)
+- `--v3` (since v0.5.0) emits the V3 static layout (fixed vaddrs, no
+  PT_DYNAMIC, static syscall resolution — smaller outputs)
+
+For in-process use from Zig, `@import("elf2sbpf")` and call
+`linkProgram` / `linkProgramV3` / `linkProgramWithSyscalls` — see
+[`docs/library.md`](library.md).
 
 ## So where is LLVM?
 
