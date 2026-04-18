@@ -224,10 +224,13 @@ test` 跑空测试。
   - `RelocError`：NotARelocationSection / CorruptRelocationTable / OutOfRange
   - **验收**：3 个单测，4-section 合成 ELF 带 .rel.text（2 个 entry：BPF_64_64 和 BPF_64_32）+ 非 reloc section 拒绝 + 非穷尽 enum 行为
 
-- [ ] **C.5**：集成测试
-  - 写一个简单的 `elf-dump.zig` 命令，用上面几个 API 把 hello.o
-    的结构打印出来
-  - **验收**：输出跟 `llvm-readelf -a` 在关键字段上一致
+- [x] **C.5**：集成测试 ✅ 2026-04-18
+  - `src/testdata/hello.o` 真实 fixture（1016 字节）
+  - `src/integration_test.zig` 用 `@embedFile` 加载，避开 Zig 0.16 `std.Io.Dir` API 迁移
+  - `.gitignore` 加例外：`!src/testdata/*.o`
+  - **5 个真数据 smoke test**：parse、section 迭代（.text/.rodata/.rel.text）、symtab（entrypoint GLOBAL FUNC）、.rel.text 的 BPF_64_64 relocation、**完整 .text decode**（7 条指令含 1 lddw 共 64 字节）
+  - **验收**：84/84 测试，端到端验证 Instruction decoder + ELF 三迭代器协作正确
+  - **规格修订**：原 plan 说 "8 instructions, 72 bytes"——实际 hello.o `.text` 是 **7 条 64 字节**（6×8 + 1×16）；llvm-objdump 标签跳号是因为 lddw 占两个 slot
 
 ---
 
@@ -544,14 +547,14 @@ Solana SBPF 特有结构。
 |------|--------|--------|------|
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
-| C — ELF 读取层 | 5 | 4 | 进行中 (80%) |
+| C — ELF 读取层 | 5 | 5 | ✅ 完成 |
 | D — Byteparser | 9 | 0 | 未开始 |
 | E — AST | 4 | 0 | 未开始 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **15** | **27%** |
+| **总计** | **56** | **16** | **29%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

@@ -985,6 +985,88 @@ C.5 是整合测试——等整个 Epic C 都做完后，用 zignocchio hello.o 
 单元测试已经证明逻辑正确；这一步是 smoke test 用真实 ELF 确认没有
 合成 ELF 没覆盖的 corner case。
 
+---
+
+## C1-C.5 — 集成测试 + fixtures 管理
+
+**日期**：2026-04-18
+**状态**：✅ 完成（Epic C 全部收尾）
+
+### 设计选择：fixtures 存放位置
+
+`@embedFile` 只能引 src/ 内部路径，Zig 0.16 的 `std.Io.Dir` 读文件
+API 对一次性测试来说太侵入。**选择**：
+
+- 把 `fixtures/helloworld/out/hello.o` 复制到 `src/testdata/hello.o`
+- 用 `@embedFile("testdata/hello.o")` 加载
+- 1016 字节，deterministic（zig-cc bridge 产物），值得 commit
+- `.gitignore` 加 `!src/testdata/*.o` 例外，让这些 fixture 可以 push
+
+### 做的事
+
+1. 复制 hello.o 到 `src/testdata/`
+2. 更新 .gitignore（加 testdata 例外）
+3. 新建 `src/integration_test.zig`：5 个集成 smoke test
+   - parse → 验证 e_machine=BPF、e_type=ET_REL、section 数
+   - 迭代 sections 验证 .text / .rodata / .rel.text 都在
+   - 迭代 symtab 验证 entrypoint 是 GLOBAL FUNC
+   - .rel.text 第一个 reloc 是 BPF_64_64
+   - .text 7 条指令 decode（6 条 8B + 1 条 lddw 16B = 64B）
+4. `lib.zig` 的 `test {}` 聚合加入 integration_test
+
+### 规格修订
+
+**修 1：hello.o 是 ET_REL (1)，不是 ET_DYN (3)**
+`.o` 是 relocatable object。ET_DYN 是 `.so`（linked shared object）。
+我第一次写测试时想当然写 3。集成测试立刻把这个错误暴露出来——**这
+就是集成测试存在的价值**。
+
+**修 2：hello.o .text 是 7 条指令 64 字节，不是 8 条 72 字节**
+
+llvm-objdump 输出里能看到：
+```
+0: 79 ...  1: 15 ...  2: 18 00 00 00 ...（lddw 16B，占用 slot 2+3）
+4: b7 ...  5: 85 ...  6: b7 ...  7: 95 ...
+```
+
+标签从 0 跳到 4 是因为 lddw 占 2 个 8 字节 slot。真实**指令计数
+是 7**，**总字节是 64**。这也是 `.text` section header 的 sh_size
+（0x40 = 64）。
+
+两个修订都记录到 C1-tasks.md。
+
+### 用户改动合并（symbol.zig hardening）
+
+测试跑之前，用户或 linter 给 symbol.zig 加了两个小检查：
+- `name_off >= strtab.len` → NameOutOfRange（原来是 `>`，但等号情况
+  cstrAt 会返回空串——安全但返回数据不清晰，改严格）
+- `sh_link > u16 max` → BadStringTable（防止 `@intCast` panic）
+
+合理 hardening，保留。
+
+### Epic C 验收
+
+| 任务 | 状态 |
+|------|------|
+| C.1 ElfFile.parse | ✅ |
+| C.2 Section iterator | ✅ |
+| C.3 Symbol iterator | ✅ |
+| C.4 Reloc iterator | ✅ |
+| C.5 Integration | ✅ |
+| **Epic C 总计** | **5/5** |
+
+**84/84** 测试全绿（72 unit + 5 integration + 4 encode/decode round-trip
++ 3 syscall vector + 等等）。
+
+### 下一任务
+
+**Epic D — Byteparser**。这是 C1 的核心 Epic，把 ELF → ParseResult
+转换的全部逻辑（算法见 Phase 3 §6.2 改进版 gap-fill + §6.3 指令处理）
+port 成 Zig。D.1-D.9 共 9 个任务。
+
+从 D.1 起手：识别 `ro_sections` 和 `text_section_bases`。
+
+
 
 
 

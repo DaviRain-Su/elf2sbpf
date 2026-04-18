@@ -47,6 +47,7 @@ test {
     _ = @import("elf/section.zig");
     _ = @import("elf/symbol.zig");
     _ = @import("elf/reloc.zig");
+    _ = @import("integration_test.zig");
 }
 
 /// Error set returned by any entry point that can fail because of input data

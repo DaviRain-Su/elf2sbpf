@@ -8,6 +8,10 @@ fixtures/helloworld/out/
 fixtures/validate-all/
 !fixtures/helloworld/out/.gitkeep
 
+# Testdata files are tracked — they're small, deterministic, committed as
+# pre-built fixtures so tests work without a Zig rebuild pipeline.
+!src/testdata/*.o
+
 # Rust reference shim
 reference-shim/target/
 reference-shim/Cargo.lock

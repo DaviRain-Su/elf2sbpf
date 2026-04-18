@@ -133,7 +133,7 @@ pub const SymbolIter = struct {
         );
 
         const name_off: usize = @intCast(sym.st_name);
-        if (name_off > self.strtab.len) return SymbolError.NameOutOfRange;
+        if (name_off >= self.strtab.len) return SymbolError.NameOutOfRange;
         const name = cstrAt(self.strtab, name_off);
 
         return Symbol{
@@ -172,7 +172,9 @@ pub fn makeIter(file: *const ElfFile, kind: SymTableKind) SymbolError!SymbolIter
         const count: u32 = @intCast(sz / ent);
 
         // Resolve linked string table via sh_link.
-        const link_idx: u16 = @intCast(sh.sh_link);
+        const link_raw = sh.sh_link;
+        if (link_raw > std.math.maxInt(u16)) return SymbolError.BadStringTable;
+        const link_idx: u16 = @intCast(link_raw);
         if (link_idx >= file.sh_count) return SymbolError.BadStringTable;
         const strtab_hdr = file.sectionHeaderAt(link_idx);
         if (strtab_hdr.sh_type != elf.SHT_STRTAB) return SymbolError.BadStringTable;
@@ -341,4 +343,34 @@ test "iterSymbols: dynsym flavor returns NoSymbolTable for a .symtab-only ELF" {
     makeSymtabElf(&bytes);
     const file = try ElfFile.parse(&bytes);
     try testing.expectError(SymbolError.NoSymbolTable, makeIter(&file, .dynsym));
+}
+
+test "iterSymbols: NameOutOfRange when st_name equals strtab size" {
+    var bytes: [512]u8 = undefined;
+    makeSymtabElf(&bytes);
+
+    // Symbol 1 starts at 320 + 24. Set st_name to .strtab size (=16),
+    // which is one-past-end and must be rejected.
+    const sym1 = 320 + 24;
+    std.mem.writeInt(u32, bytes[sym1 .. sym1 + 4][0..4], 16, .little);
+
+    const file = try ElfFile.parse(&bytes);
+    var it = try makeIter(&file, .symtab);
+
+    // STN_UNDEF first symbol still parses.
+    _ = (try it.next()).?;
+    // Next symbol name offset is exactly at end of strtab -> error.
+    try testing.expectError(SymbolError.NameOutOfRange, it.next());
+}
+
+test "makeIter: BadStringTable when sh_link does not fit u16" {
+    var bytes: [512]u8 = undefined;
+    makeSymtabElf(&bytes);
+
+    // .symtab section header is at offset 128; sh_link field at 168..172.
+    // Force a value larger than u16 max to validate guarded cast.
+    std.mem.writeInt(u32, bytes[168..172], 70000, .little);
+
+    const file = try ElfFile.parse(&bytes);
+    try testing.expectError(SymbolError.BadStringTable, makeIter(&file, .symtab));
 }
