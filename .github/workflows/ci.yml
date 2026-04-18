@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel redundant runs when new commits land on the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: zig build + zig build test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: zig version
+        run: zig version
+
+      - name: zig build
+        run: zig build
+
+      # The 9-example byte-diff acceptance gate runs inside `zig build test`
+      # via src/testdata/<example>.{o,shim.so} goldens and the integration
+      # loop in src/integration_test.zig. No separate harness needed.
+      - name: zig build test --summary all
+        run: zig build test --summary all
+
+      - name: smoke-test CLI (hello.o)
+        run: |
+          ./zig-out/bin/elf2sbpf src/testdata/hello.o /tmp/hello.zig.so
+          cmp /tmp/hello.zig.so src/testdata/hello.shim.so
