@@ -6,19 +6,54 @@
 
 ## 状态
 
-**阶段：C1 MVP 已达成（2026-04-18）**
+**阶段：C1 MVP 已达成（2026-04-18）；C2（集成 & 上游）进行中**
 
 当前仓库状态：
 
 - `zig build` ✅
-- `zig build test` ✅
-- `./scripts/validate-zig.sh` ✅（zignocchio 9/9 example 全部和 `reference-shim` MATCH）
+- `zig build test --summary all` ✅（362/362 tests，含 9 example byte-diff loop）
+- `./scripts/validate-zig.sh` ✅（zignocchio 9/9 example 和 `reference-shim` MATCH）
+- GitHub Actions CI ✅（ubuntu-latest + macos-latest）
 - `linkProgram()` / CLI 已接通，`elf2sbpf input.o output.so` 可直接使用
+- zignocchio 集成草稿：`docs/integrations/zignocchio-build.zig`（实测端到端 MATCH）
 
-剩余工作主要属于收尾/后续迭代：CI、golden fixture 扩展、zignocchio 集成草稿、V3 / debug info 等 C2 范围事项。
+**C2 路线图**：fuzz-lite 回归防线 / litesvm 运行时验证 / zignocchio 上游 PR
+/ v0.1.0 release。详见 `docs/C2-tasks.md`。
 
-完整背景见 `docs/C0-findings.md`；执行细节见 `docs/C1-tasks.md` 和
-`docs/06-implementation-log.md`。
+完整背景见 `docs/C0-findings.md`；执行细节见 `docs/C1-tasks.md` /
+`docs/C2-tasks.md` / `docs/06-implementation-log.md`。
+
+## 安装 & 使用
+
+```bash
+# 拉代码 & 构建（需要 Zig 0.16.0）
+git clone https://github.com/DaviRain-Su/elf2sbpf && cd elf2sbpf
+zig build -p ~/.local           # 装到 ~/.local/bin/elf2sbpf
+export PATH="$HOME/.local/bin:$PATH"
+
+# 用
+elf2sbpf input.o output.so
+```
+
+macOS arm64 + Linux x86_64 官方支持；其它平台理论可用（Zig 本身跨平台）
+但未测试。
+
+完整安装指南：`docs/install.md`。
+
+## 接入到你的 Zig Solana 项目
+
+如果你已经在用 [zignocchio](https://github.com/BretasArthur1/zignocchio)
+或类似 Zig-based Solana 框架，可以直接拷
+`docs/integrations/zignocchio-build.zig` 到你仓库根目录（替换现有
+`build.zig`），然后：
+
+```bash
+zig build -Dexample=hello               # 默认使用 elf2sbpf
+zig build -Dexample=hello -Dlinker=sbpf-linker   # 回退到老路径
+```
+
+**不再需要** `cargo install sbpf-linker`、`LD_LIBRARY_PATH` hack、
+libLLVM.so.20 符号链接 等前置配置。
 
 ## 它做什么（和它不做什么）
 
@@ -137,4 +172,4 @@ stage 2 逻辑，但不依赖 bpf-linker 也不依赖 libLLVM，在 C1 阶段
 
 ## License
 
-待定。
+MIT。见 `LICENSE`。
