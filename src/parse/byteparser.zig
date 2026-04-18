@@ -405,8 +405,6 @@ pub fn collectLddwTargets(
         const target_sec_idx_raw = rel_sec.header.sh_info;
         if (target_sec_idx_raw > std.math.maxInt(u16)) continue;
         const target_sec_idx: u16 = @intCast(target_sec_idx_raw);
-        _ = rel_sec.header.sh_link;
-
         // Only consider relocations that operate on a text section.
         const text_sec = blk: {
             for (sections.text_bases.items) |tb| {
@@ -415,8 +413,16 @@ pub fn collectLddwTargets(
             continue;
         };
 
+        // Bind to the symbol table referenced by this relocation section.
+        const symtab_idx_raw = rel_sec.header.sh_link;
+        if (symtab_idx_raw > std.math.maxInt(u16)) continue;
+        const symtab_idx: u16 = @intCast(symtab_idx_raw);
+
         // Pre-build symbol lookup for this relocation section's symtab.
-        var sym_lookup = buildSymbolLookup(allocator, file) catch continue;
+        var sym_lookup = buildSymbolLookupAt(allocator, file, symtab_idx) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => continue,
+        };
         defer sym_lookup.deinit(allocator);
 
         var rel_it = try file.iterRelocations(rel_sec);

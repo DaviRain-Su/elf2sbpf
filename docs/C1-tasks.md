@@ -336,11 +336,15 @@ test` 跑空测试。
 
 ### 任务
 
-- [ ] **E.1**：`ast/node.zig`
-  - `ASTNode` tagged union：`Label` | `Instruction` | `ROData`
-    | `GlobalDecl`
-  - `Label`、`ROData`、`GlobalDecl` 子结构
-  - **验收**：能构造每种 node 并格式化打印
+- [x] **E.1**：`ast/node.zig` ✅ 2026-04-18
+  - `ASTNode` tagged union 4 变体（Label / Instruction / ROData / GlobalDecl）
+  - `Label { name, span }` / `ROData { name, bytes, span }` / `GlobalDecl { entry_label, span }`
+  - `isTextNode()` / `isRodataNode()` / `offset()` 辅助
+  - **决定**：ROData 用 `bytes: []const u8`（不是 `[]Number`）——byteparser
+    产 byte array，不需要 tagged union 膨胀
+  - **scope**：只 port 了 4 个 byteparser 会产的 variant，Rust 的
+    Directive/EquDecl/ExternDecl/RodataDecl 是 text parser only，推迟到 D
+  - **验收**：6 单测覆盖所有 variant 构造、分类、字段访问
 
 - [ ] **E.2**：`ast/ast.zig` — AST 结构
   - `struct { nodes, rodata_nodes, text_size, rodata_size }`
@@ -563,12 +567,12 @@ Solana SBPF 特有结构。
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
 | D — Byteparser | 9 | 9 | ✅ 完成 |
-| E — AST | 4 | 0 | 未开始 |
+| E — AST | 4 | 1 | 进行中 (25%) |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **25** | **45%** |
+| **总计** | **56** | **26** | **46%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

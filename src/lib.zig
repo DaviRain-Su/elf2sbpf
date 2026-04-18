@@ -38,6 +38,12 @@ pub const RelocType = reloc_mod.RelocType;
 
 pub const byteparser = @import("parse/byteparser.zig");
 
+const ast_node = @import("ast/node.zig");
+pub const ASTNode = ast_node.ASTNode;
+pub const Label = ast_node.Label;
+pub const ROData = ast_node.ROData;
+pub const GlobalDecl = ast_node.GlobalDecl;
+
 // Make sub-module tests runnable via `zig build test`.
 test {
     _ = @import("common/number.zig");
@@ -51,6 +57,7 @@ test {
     _ = @import("elf/symbol.zig");
     _ = @import("elf/reloc.zig");
     _ = @import("parse/byteparser.zig");
+    _ = @import("ast/node.zig");
     _ = @import("integration_test.zig");
 }
 
