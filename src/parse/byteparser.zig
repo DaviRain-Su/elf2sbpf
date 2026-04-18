@@ -843,9 +843,31 @@ pub fn scanDebugSections(
     var entries: std.ArrayList(DebugSectionEntry) = .empty;
     errdefer entries.deinit(allocator);
 
+    // Matches Rust `reuse_debug_sections` (sbpf-assembler debug.rs L197-234)
+    // whitelist — sections outside this set are dropped, same as Rust.
+    // Keeping the lists parallel ensures byte-exact output against the
+    // oracle.
+    const KNOWN: []const []const u8 = &.{
+        ".debug_abbrev",
+        ".debug_info",
+        ".debug_line",
+        ".debug_line_str",
+        ".debug_str",
+        ".debug_frame",
+        ".debug_loc",
+        ".debug_ranges",
+    };
+
     var sec_it = file.iterSections();
     while (try sec_it.next()) |sec| {
-        if (!std.mem.startsWith(u8, sec.name, ".debug_")) continue;
+        var keep = false;
+        for (KNOWN) |name| {
+            if (std.mem.eql(u8, sec.name, name)) {
+                keep = true;
+                break;
+            }
+        }
+        if (!keep) continue;
         try entries.append(allocator, .{ .name = sec.name, .data = sec.data });
     }
 

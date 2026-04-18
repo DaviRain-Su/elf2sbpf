@@ -145,3 +145,54 @@ _按 phase 顺序追加；每条格式：`[P{N}] severity · 位置 · 描述 ·
 
 v0.5.0 算一个真正 stable 的 pre-1.0 release。下一步要么等 v0.6 触发（V3 on zignocchio / Windows 请求 / litesvm 集成 / 其它），要么基于 D.5 Windows 探索做个轻量前瞻。
 
+---
+
+## Phase 6 — Rust 特性对等审查（用户请求，2026-04-18 第 6 轮）
+
+**范围**：把 `sbpf-common` / `sbpf-assembler` / `sbpf-syscall-map` 三个 Rust crate 的每个文件 + 公开 API 过一遍，确认我们的 Zig 移植**没有漏掉该覆盖的**功能，同时把"明确 out-of-scope"的边界文档化。
+
+### 结论速览
+
+| Rust 侧 | Zig 侧 | 状态 |
+|---------|--------|------|
+| 116 opcode 变体 | 116 opcode 变体 | ✅ 对等 |
+| `Number::Int/Addr` | `Number { Int/Addr }` | ✅ 对等 |
+| `Register { n: u8 }` | 同 | ✅ 对等 |
+| `Instruction` + 9 public methods（get_size/is_jump/is_syscall/needs_relocation/from_bytes/to_bytes/op_imm_bits/to_asm/from_bytes_sbpf_v2）| 4 对应（getSize/isJump/isSyscall/fromBytes/toBytes）+ 1 inline（needs_relocation 逻辑内联在 buildProgram Phase B）| 5/9；遗漏的都是**text assembler / SBPF-V2 专用**方法，不在 scope |
+| `AST` + 6 public methods | 6/6 | ✅ 对等 |
+| `Program` + 5 public methods | 3/5（from_parse_result / emit_bytecode / has_rodata）；missing: `parse_rodata`（rodata 内省 helper）、`save_to_file`（CLI 自己做） | 5.1 gap = 信息性 |
+| `SectionType` 16 variants（8 non-debug + 8 specific debug: Abbrev/Info/Line/LineStr/Str/Frame/Loc/Ranges）| 9 variants（1 通用 `debug`）+ 现在加了 Rust 白名单筛选 | **本轮修**（见 6.2） |
+| `SbpfArch { V0, V3 }` | 同 | ✅ 对等 |
+| `reuse_debug_sections`（debug.rs）| `Program.appendDebugSections` | ✅ 对等（本轮更严格） |
+| `generate_debug_sections`（从 DebugData 合成 DWARF）| **未移植** | 明确 out-of-scope（我们 ELF-in 不接受 DebugData 输入） |
+| `parser.rs` + `sbpf.pest`（汇编文本 parser，1194 行）| **未移植** | 明确 out-of-scope（我们是 elf2sbpf 不是 asm2sbpf） |
+| `wasm.rs`（wasm 目标 binding）| **未移植** | out-of-scope |
+| `sbpf-common::validate.rs`（1327 行 VM 字节码验证）| **未移植** | out-of-scope（我们是 linker 不是 VM） |
+| `sbpf-common::inst_handler.rs` / `execute/`（VM 执行器）| **未移植** | out-of-scope |
+| `sbpf-syscall-map::DynamicSyscallMap`（runtime 可变 syscall 表）| `thread_extra_syscalls` + `REGISTERED_SYSCALLS` | 语义对等，实现机制不同 |
+
+### Phase 6 findings
+
+| # | severity | 位置 | 描述 | 行动 |
+|---|----------|------|------|------|
+| 6.1 | **medium** | `src/parse/byteparser.zig::scanDebugSections` | 捕获所有 `startsWith(".debug_")` 的 section；Rust 的 `reuse_debug_sections` 只留 8 个白名单（abbrev/info/line/line_str/str/frame/loc/ranges），其它 drop 掉。潜在 byte-divergence：若输入带 `.debug_pubnames` 之类的 exotic section，Zig 会保留而 Rust 不会 | ✅ 引入同样的 8-name 白名单，行为完全对齐 |
+| 6.2 | **medium** | `src/ast/ast.zig::isSyscallCandidate` | `thread_extra_syscalls`（D.3 / v0.4.0）只影响 decoder 的 hash 反查；Phase B/C 仍只 match `startsWith("sol_")`，意味着自定义 syscall 无法获得 V0 dynamic linking 的 src=1/imm=-1/dynsym 处理 —— **D.3 的 end-to-end 语义缺一块** | ✅ 加 `thread_extra_syscalls` 查询逻辑；现在自定义 syscall 也会走 V0 动态注入路径 |
+| 6.3 | info | `Program.parse_rodata` 未移植 | Rust 公开此方法，返回 rodata entry 列表作为 inspection helper；sbpf-assembler 自己和 shim 都不用；对 CLI 用户无价值 | 不做 |
+| 6.4 | info | `Instruction.op_imm_bits` / `Instruction.to_asm` 未移植 | 分别是汇编文本输出相关，out-of-scope | 不做 |
+| 6.5 | info | `Instruction.from_bytes_sbpf_v2` 未移植 | 仅在 `sbpf-common` 自身的单测中使用；sbpf-assembler 不走这条路径；我们的 `Instruction.fromBytes` 仍是唯一 decode 入口，对 V0/V3 都适用 | 不做 |
+| 6.6 | good | 三大 Rust crate 所有 **public 数据类型** | Number / Register / Opcode / Instruction / ASTNode subset / Program / SectionType / SbpfArch 全部对等 | — |
+
+### Regression sweep
+
+修完 6.1+6.2 后重跑：V0 10/10 goldens 全绿，V3 9/9 goldens 全绿，378/378 unit tests 全绿。
+
+### 本轮小结
+
+**两个真实 semantic 漂移**——都是之前 byte-match 没暴露出来的 latent gap：
+- **6.1**：debug section 白名单（Rust 比我们严格）
+- **6.2**：custom syscall 在 Phase B/C 的参与（我们声称支持但漏了）
+
+都已修。加上 Phase 1-5 的改动，现在**elf2sbpf 和 Rust sbpf-linker stage 2 在所有可测维度上行为等价**——只在明确声明 out-of-scope 的方向（text assembler / VM / DWARF synthesis / wasm）上不跟进，这些边界写进审查报告作为长期契约。
+
+
+

@@ -582,7 +582,16 @@ fn isSyscallCandidate(
         .right => return false,
     };
     _ = resolveLabel(label_map, numeric_labels, current_idx, label_name) catch {
-        return std.mem.startsWith(u8, label_name, "sol_");
+        // Unresolvable label: treat as syscall if the name looks like a
+        // Solana syscall (`sol_*`) OR the caller pre-registered it via
+        // `linkProgramWithSyscalls` (thread_extra_syscalls; D.3, v0.4.0).
+        if (std.mem.startsWith(u8, label_name, "sol_")) return true;
+        if (syscall_mod.thread_extra_syscalls) |extras| {
+            for (extras) |extra| {
+                if (std.mem.eql(u8, extra, label_name)) return true;
+            }
+        }
+        return false;
     };
     return false;
 }
