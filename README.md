@@ -6,16 +6,19 @@
 
 ## 状态
 
-**阶段：C1 进行中（当前任务清单 37/56，约 66%）**
+**阶段：C1 MVP 已达成（2026-04-18）**
 
 当前仓库状态：
 
-- C0 已完成：`reference-shim` 已在 zignocchio 9/9 example 上验证端到端流程
-- C1 已完成大半：Epic A–E 完成，Epic F 进行中，Epic G / I 尚未开始
-- `linkProgram()` **尚未接通最终 emit**，所以当前分支还不能稳定产出最终 `.so`
-- `zig build` / `zig build test` 应保持为当前分支的最低健康线
+- `zig build` ✅
+- `zig build test` ✅
+- `./scripts/validate-zig.sh` ✅（zignocchio 9/9 example 全部和 `reference-shim` MATCH）
+- `linkProgram()` / CLI 已接通，`elf2sbpf input.o output.so` 可直接使用
 
-完整背景见 `docs/C0-findings.md`；当前执行状态以 `docs/C1-tasks.md` 为准。
+剩余工作主要属于收尾/后续迭代：CI、golden fixture 扩展、zignocchio 集成草稿、V3 / debug info 等 C2 范围事项。
+
+完整背景见 `docs/C0-findings.md`；执行细节见 `docs/C1-tasks.md` 和
+`docs/06-implementation-log.md`。
 
 ## 它做什么（和它不做什么）
 
@@ -109,26 +112,27 @@ stage 2 逻辑，但不依赖 bpf-linker 也不依赖 libLLVM，在 C1 阶段
 
 ## Scope（C1 MVP）
 
-下面是 **C1 目标范围**，不是“已全部完成”的勾选表：
+**已完成：**
 
-- 目标支持 SbpfArch V0
-- 目标支持 `.text` + `.rodata` sections，包括多字符串的 `.rodata.str1.1`
-- 目标支持 `lddw` 和 `call` relocation
-- 目标保留改进版 rodata gap-fill：在每个 `lddw` 目标偏移处切分 section，
+- ✅ SbpfArch V0
+- ✅ `.text` + `.rodata` sections，包括多字符串的 `.rodata.str1.1`
+- ✅ `lddw` 和 `call` relocation
+- ✅ 改进版 rodata gap-fill：在每个 `lddw` 目标偏移处切分 section，
   让 Zig/clang 默认产出的 `.rodata.str1.1` 在**没有具名字符串符号**时也能工作
-- C1 验收目标：zignocchio 9/9 example 经过 `zig cc` bridge 后，Zig 产物与
+- ✅ zignocchio 9/9 example 经过 `zig cc` bridge 后，Zig 产物与
   `reference-shim` 字节一致
 
-明确推迟：
+**明确推迟到后续：**
 
-- SbpfArch V3
-- Debug info（`.debug_*`）保留
-- 动态 syscall 解析
+- ⏭️ SbpfArch V3
+- ⏭️ Debug info（`.debug_*`）保留
+- ⏭️ 动态 syscall 解析
 
 ## 验证
 
 - 全量验证：`./scripts/validate-zig.sh`
 - 单个 example：`./scripts/validate-zig.sh hello`
+- 当前结果：`validate-zig.sh` 对 9/9 example 全绿
 - 脚本说明：`scripts/README.md`
 
 ## License

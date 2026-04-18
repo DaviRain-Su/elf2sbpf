@@ -1,6 +1,6 @@
 # elf2sbpf — 产品需求文档（PRD）
 
-**状态**：C1 进行中
+**状态**：C1 MVP 已达成（待收尾）
 **最后更新**：2026-04-18
 
 ---
@@ -212,17 +212,17 @@ zig cc（被调用，不是被链接）
 
 ### In Scope（C1 MVP）
 
-下面列的是 **C1 目标范围**，不是当前完成度勾选：
+下面这些目标已在当前分支达成：
 
-- 把 sbpf-linker 的 stage 2 逻辑完整 port 到 Zig
-- SbpfArch V0 支持
-- `.text` + `.rodata` section（包括 Zig / clang 产出的多字符串
+- ✅ 把 sbpf-linker 的 stage 2 逻辑完整 port 到 Zig
+- ✅ SbpfArch V0 支持
+- ✅ `.text` + `.rodata` section（包括 Zig / clang 产出的多字符串
   `.rodata.str1.1`）
-- `lddw` + `call` relocation 的重写
-- 改进版 rodata gap-fill 算法（已在 shim 验证设计）
-- Syscall murmur3-32 哈希注入
-- CLI 工具（`elf2sbpf input.o output.so`）
-- zignocchio 9/9 example 跟 shim 字节一致（作为 C1 验收标准）
+- ✅ `lddw` + `call` relocation 的重写
+- ✅ 改进版 rodata gap-fill 算法
+- ✅ Syscall murmur3-32 哈希注入
+- ✅ CLI 工具（`elf2sbpf input.o output.so`）
+- ✅ zignocchio 9/9 example 跟 shim 字节一致
 
 ### Out of Scope（推迟到 C2 或 D 阶段）
 
@@ -245,6 +245,9 @@ zig cc（被调用，不是被链接）
 ## 5. 成功标准
 
 ### C1 MVP 通过标准
+
+**当前状态**：截至 2026-04-18，构建、测试和 9/9 shim 对拍已通过；
+CI / 发布整理仍属于收尾事项。
 
 **必须（MUST）**：
 
@@ -270,9 +273,9 @@ zig cc（被调用，不是被链接）
 
 1. `/Users/davirian/dev/active/elf2sbpf/` 下的 Zig 项目
 2. `elf2sbpf` 二进制能直接跑
-3. 所有 9 个 zignocchio example 的对拍脚本跑绿
-4. 项目 README 更新到 C1 完成状态
-5. zignocchio 的 `build.zig` 草稿（展示如何接入 elf2sbpf）
+3. 所有 9 个 zignocchio example 的对拍脚本跑绿 ✅
+4. 项目 README 更新到 C1 完成状态 ✅
+5. zignocchio 的 `build.zig` 草稿（展示如何接入 elf2sbpf，留作后续收尾项）
 
 ---
 

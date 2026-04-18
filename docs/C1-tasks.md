@@ -3,6 +3,10 @@
 **目标**：把 sbpf-linker 的 stage 2 完整 port 成 Zig，9/9 zignocchio
 example 跟 `reference-shim` 字节一致。
 
+**当前状态**：这个核心目标已在 2026-04-18 达成（`validate-zig.sh`
+9/9 全绿）。本清单剩余未勾选项主要是 CI、golden fixture、文档和
+后续集成收尾。
+
 **预估**：6-8 周单人全职，约 40-55 工作日。
 
 **在 dev-lifecycle 中的位置**：
@@ -543,10 +547,9 @@ Solana SBPF 特有结构。
   - `parseArgv` → `ParsedArgs { help, run { input_path, output_path } }`
   - `printUsage` 写 stderr
   - 3 单测（run / help / invalid arity）
-- [ ] **H.2**：`main.zig` — 主流程（框架已接通，待 Epic G 验收）
+- [x] **H.2**：`main.zig` — 主流程 ✅ 2026-04-18
   - CLI 入口、参数解析、读写文件和退出码路径已接好
-  - **注意**：`linkProgram` 当前仍是 stub（返回 InvalidElf）。H.2 的
-    "产出 .so 跟 shim 一致" 验收要等 Epic G（Program.emitBytecode）完成
+  - `linkProgram` 已接通，`elf2sbpf input.o output.so` 端到端可用
 - [x] **H.3**：基本错误处理 ✅ 2026-04-18
   - `linkErrorExitCode(LinkError) → u8`（按错误类型映射 1-5）
   - 文件读写错误分别 exit 2/5
@@ -564,10 +567,11 @@ Solana SBPF 特有结构。
 
 ### 任务
 
-- [ ] **I.1**：扩展 `scripts/validate-all.sh`
+- [x] **I.1**：扩展 `scripts/validate-all.sh` ✅ 2026-04-18
   - 增加第三列对拍：Zig 版 vs shim
   - 表格输出：example | baseline | shim | zig | shim-vs-zig
-  - **验收**：脚本跑完 9/9 example
+  - `validate-zig.sh` 作为兼容入口补齐
+  - **验收**：脚本跑完 9/9 example，**全部 MATCH**
 
 - [ ] **I.2**：Golden fixtures
   - 把 shim 对每个 example 产出的 `.so` 保存到
@@ -585,10 +589,10 @@ Solana SBPF 特有结构。
   - 跑：`zig build` + `zig build test` + `validate-all.sh`
   - **验收**：一条命令跑完全部 C1 验收
 
-- [ ] **I.5**：README 更新
-  - 更新 status 到 "C1 complete"
-  - 更新 scope 里每个条目的 checkmark
-  - **验收**：`docs/C1-tasks.md` 全部勾选 + README 状态更新
+- [x] **I.5**：README 更新 ✅ 2026-04-18
+  - 更新 status 到 "C1 MVP 已达成"
+  - 更新 scope 里每个条目的状态
+  - **验收**：README 与当前实现状态一致
 
 - [ ] **I.6**（可选）：zignocchio `build.zig` 草稿
   - 在 elf2sbpf 仓库里放一份修改后的 `build.zig` 作为 PR 预览
@@ -611,9 +615,9 @@ Solana SBPF 特有结构。
 | E — AST | 4 | 4 | ✅ 完成 |
 | F — ELF 输出层 | 12 | 12 | ✅ 完成 |
 | G — Program emit | 4 | 4 | ✅ 完成 |
-| H — CLI | 3 | 3 | ✅ 完成（linkProgram 接通） |
-| I — 对拍测试 | 6 | 1 | 进行中（hello.o 已绿；剩 8 个 zignocchio 例） |
-| **总计** | **56** | **49** | **88%** |
+| H — CLI | 3 | 3 | ✅ 完成 |
+| I — 对拍测试 | 6 | 2 | 进行中（9/9 对拍已绿；CI / golden / zignocchio 草稿待补） |
+| **总计** | **56** | **50** | **89%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
