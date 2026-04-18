@@ -234,5 +234,6 @@ test "parse accepts a minimal header with no sections" {
     try testing.expectEqual(elf.ELFCLASS64, file.header.e_ident[elf.EI.CLASS]);
 }
 
-// Real-file integration tests live in `tests/integration.zig` — @embedFile
-// can't reach outside src/.
+// Real-file integration tests live in `src/integration_test.zig`, with
+// committed golden fixtures under `src/testdata/` so `@embedFile` can reach
+// them from the package.

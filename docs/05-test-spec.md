@@ -221,12 +221,14 @@ src/
 
 #### L2 对拍测试
 
-每个 zignocchio example 都有：
+当前仓库**没有**提交 `*.parse_result.json` fixture；这类测试还停留在
+未来扩展设计阶段。若后续 `reference-shim` 增加 `--dump-parse-result`，
+目标形态大致如下：
 
 ```zig
-test "byteparser matches shim output for hello.o" {
-    const input = @embedFile("fixtures/hello.o");
-    const expected = @embedFile("fixtures/hello.parse_result.json");
+test "byteparser matches shim parse-result JSON for hello.o" {
+    const input = @embedFile("testdata/hello.o");
+    const expected = @embedFile("testdata/hello.parse_result.json");
 
     var parse_result = try parseBytecode(testing.allocator, input);
     defer parse_result.deinit();
@@ -238,7 +240,7 @@ test "byteparser matches shim output for hello.o" {
 }
 ```
 
-**说明**：shim 侧的 `--dump-parse-result` JSON 导出目前**还没实现**。
+**说明**：`reference-shim` 侧的 `--dump-parse-result` 目前**还没实现**。
 在它落地之前，L2 以 Zig 侧结构测试和最终 `.so` 字节级对拍为主；
 如果后续补上该 flag，再恢复这里的 JSON 中间产物对拍。
 
@@ -352,11 +354,12 @@ zig cc -target bpfel-freestanding -mcpu=v2 -O2 \
 reference-shim/target/release/elf2sbpf-shim src/testdata/<name>.o src/testdata/<name>.shim.so
 ```
 
-### 5.3 `*.parse_result.json`（中间产物，未来扩展）
+### 5.3 `*.parse_result.json`（可选中间产物，尚未落地）
 
-**当前状态**：`reference-shim` 还没有 `--dump-parse-result`。
-这部分 schema 先作为未来扩展草案保留；当前主验证路径仍是
-`validate-zig.sh` / `validate-all.sh` 的字节级 `.so` 对拍。
+**当前状态**：`reference-shim` 还没有 `--dump-parse-result`，仓库里
+也没有提交这类 JSON fixture。下面的 schema 仅作为未来扩展草案保留；
+当前主验证路径仍是 `validate-zig.sh` / `validate-all.sh` 的字节级 `.so`
+对拍。
 
 **JSON schema**（简要）：
 
