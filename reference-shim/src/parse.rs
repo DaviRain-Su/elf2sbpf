@@ -40,7 +40,21 @@ struct RodataEntry {
     bytes: Vec<Number>,
 }
 
+pub fn parse_bytecode_ex(
+    bytes: &[u8],
+    arch: sbpf_assembler::SbpfArch,
+) -> Result<ParseResult, SbpfLinkerError> {
+    parse_bytecode_impl(bytes, arch)
+}
+
 pub fn parse_bytecode(bytes: &[u8]) -> Result<ParseResult, SbpfLinkerError> {
+    parse_bytecode_impl(bytes, sbpf_assembler::SbpfArch::V0)
+}
+
+fn parse_bytecode_impl(
+    bytes: &[u8],
+    arch: sbpf_assembler::SbpfArch,
+) -> Result<ParseResult, SbpfLinkerError> {
     let mut ast = AST::new();
 
     let obj = File::parse(bytes)?;
@@ -371,7 +385,7 @@ pub fn parse_bytecode(bytes: &[u8]) -> Result<ParseResult, SbpfLinkerError> {
     ast.set_text_size(text_size);
 
     let mut parse_result = ast
-        .build_program(sbpf_assembler::SbpfArch::V0)
+        .build_program(arch)
         .map_err(|errors| SbpfLinkerError::BuildProgramError { errors })?;
 
     parse_result.debug_sections = debug_sections;

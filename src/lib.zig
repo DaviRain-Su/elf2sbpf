@@ -156,6 +156,25 @@ pub fn linkProgram(
     allocator: std.mem.Allocator,
     elf_bytes: []const u8,
 ) LinkError![]u8 {
+    return linkProgramArch(allocator, elf_bytes, .V0);
+}
+
+/// Same pipeline as `linkProgram`, but targeting SBPF V3 (static
+/// layout, no PT_DYNAMIC, fixed virtual addresses). Output is
+/// byte-identical to `reference-shim --v3` for V3-compatible inputs.
+/// Since v0.5.0 (D.1).
+pub fn linkProgramV3(
+    allocator: std.mem.Allocator,
+    elf_bytes: []const u8,
+) LinkError![]u8 {
+    return linkProgramArch(allocator, elf_bytes, .V3);
+}
+
+fn linkProgramArch(
+    allocator: std.mem.Allocator,
+    elf_bytes: []const u8,
+    arch: SbpfArch,
+) LinkError![]u8 {
     const elf_file = ElfFile.parse(elf_bytes) catch return LinkError.InvalidElf;
 
     var bpr = byteparser.byteParse(allocator, &elf_file) catch |e| switch (e) {
@@ -176,7 +195,7 @@ pub fn linkProgram(
         debug_slice[i] = .{ .name = e.name, .data = e.data };
     }
 
-    var parse_result = ast_val.buildProgram(.V0, debug_slice) catch |e| switch (e) {
+    var parse_result = ast_val.buildProgram(arch, debug_slice) catch |e| switch (e) {
         error.OutOfMemory => return LinkError.OutOfMemory,
         error.UndefinedLabel => return LinkError.UndefinedLabel,
     };

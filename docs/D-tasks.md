@@ -134,29 +134,51 @@
 
 ---
 
-## D.1 — SbpfArch V3（大工程占位）
+## D.1 — SbpfArch V3 ✅ 2026-04-18（v0.5.0）
 
 **动机**：Solana runtime 正在推 V3 作为新默认（static relocation、
-更快 loader、fixed vaddr）。我们 C1 只做了 V0；V3 是扩展方向。
+更快 loader、fixed vaddr）。C1 只做了 V0；V3 是扩展方向。
 
-**预估**：1-2 周
+**实际耗时**：原估 1-2 周；**最终约 2 小时**（出乎意料地轻量，
+因为 C1 期间已经把 V3 分支做成"占位 if-else"而不是 stub）。
 
-### 为什么不是 P0
+### 做了什么
 
-- V0 向后兼容，短期不会被 runtime 淘汰
-- zignocchio 当前所有 example 都是 V0
-- V3 需要碰 byteparser（没有 dynamic relocation）、AST（不同的
-  syscall resolution）、emit（不同的 ELF 布局）——三层都要改
-- 没有 V3 产物的 reference-shim 对拍目标（`reference-shim/` 只
-  处理 V0 管道）
+1. **reference-shim**：加 `--v3` flag（默认 V0）→ 生成 V3 对拍 golden
+2. **linkProgramV3**：新公开 API，走 arch=.V3 的管道；CLI 加 `--v3`
+3. **修 3 处 V3-specific bug**：
+   - `layoutV3` 的 PH[0] 用 PADDED rodata size（off-by-1）
+   - `fromParseResult` text_offset 也 PADDED rodata size
+   - shstrtab name_offset 在 V3 分支用 `cumulativeNameLen`
+     （**不加 +1**）—— V3 shstrtab 的 sh_name 指向空串而不是 ".s"
+   - V3 with rodata 的 section_names 顺序为 [".text", ".rodata"]
+     （即使 section 表里 rodata 在 code 之前）
+4. **Phase C syscall hash bit-cast**（u32 → i32）—— 修
+   ImmOutOfRange：hash 高位 set 时 `@intCast` 到 i64 会产出
+   > i32.max 的值，encoder 拒绝。改成 `@bitCast` 通过 i32 保证
+   round-trip
 
-### 启动条件
+### 9/9 V3 sweep
 
-- zignocchio 或其他用户请求支持
-- 或者 Solana runtime 官方公告 V3 作为 default
+| Example | V3 size | V0 size |
+|---------|---------|---------|
+| hello | 544 B | 1192 B |
+| noop | 360 B | 304 B |
+| logonly | 536 B | 1184 B |
+| counter | 2272 B | 3344 B |
+| vault | 10464 B | 12256 B |
+| transfer-sol | 3448 B | 4384 B |
+| pda-storage | 7544 B | 8728 B |
+| escrow | 16824 B | 18616 B |
+| token-vault | 18608 B | 20496 B |
 
-真开始做时，另开 `docs/D1-v3-tasks.md`，按 dev-lifecycle 重新走
-Phase 3/4/5。
+V3 产物普遍比 V0 小 —— 少了 dynamic/dynsym/dynstr/rel.dyn 四个 section。
+
+### 新增集成测试
+
+`integration: 9 zignocchio examples byte-match reference-shim under V3`
+—— V3 sweep loop，跟 V0 sweep 并列跑。V3 shim golden 入库作为
+`src/testdata/<example>.v3.shim.so`（9 个新文件）。
 
 ---
 
@@ -183,7 +205,7 @@ Phase 3/4/5。
 
 | 任务 | 状态 |
 |------|------|
-| D.1 V3 arch | 未开始（等触发条件） |
+| D.1 V3 arch | ✅ 完成，v0.5.0 已发 |
 | D.2 Debug info | ✅ 完成，v0.2.0 已发 |
 | D.3 Dynamic syscall | ✅ 完成，v0.4.0 已发 |
 | D.4 Zig 库 API | ✅ 完成（infra + docs；v0.3.0 release 进行中） |

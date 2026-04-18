@@ -160,8 +160,11 @@ pub const Program = struct {
             @as(u64, ph_count) * @as(u64, header_mod.PROGRAM_HEADER_SIZE);
         var current_offset: u64 = base_offset;
 
+        // V3 with rodata: code follows rodata PADDED to 8-byte boundary.
+        // V0 / V3-no-rodata: code starts right after the program-header
+        // table at base_offset.
         const text_offset: u64 = if (arch == .V3 and has_rodata)
-            rodata_size + base_offset
+            ((rodata_size + 7) & ~@as(u64, 7)) + base_offset
         else
             base_offset;
 
@@ -176,13 +179,22 @@ pub const Program = struct {
         try self.appendSection(allocator, .{ .null_ = section_mod.NullSection.init() });
 
         if (arch == .V3 and has_rodata) {
-            // V3 with rodata: rodata FIRST (vaddr 0), then code (vaddr 1<<32).
+            // V3 with rodata: Rust canonicalizes section_names as
+            // [".text", ".rodata"] regardless of section-table order
+            // (which has rodata first, code second). Pre-assign name
+            // offsets in the canonical order so shstrtab matches.
+            const text_name_offset = @as(u32, @intCast(1 + cumulativeNameLen(self.section_names.items)));
+            try self.section_names.append(allocator, ".text");
+            const rodata_name_offset = @as(u32, @intCast(1 + cumulativeNameLen(self.section_names.items)));
+            try self.section_names.append(allocator, ".rodata");
+
+            // Section table still goes rodata first (vaddr 0),
+            // then code (vaddr 1<<32).
             var data_section = section_mod.DataSection{
                 .nodes = pr.data_section.nodes.items,
                 .size = rodata_size,
+                .name_offset = rodata_name_offset,
             };
-            data_section.setNameOffset(@as(u32, @intCast(1 + cumulativeNameLen(self.section_names.items))));
-            try self.section_names.append(allocator, ".rodata");
             data_section.setOffset(current_offset);
             current_offset += data_section.alignedSize();
             try self.appendSection(allocator, .{ .data = data_section });
@@ -190,9 +202,8 @@ pub const Program = struct {
             var code_section = section_mod.CodeSection{
                 .nodes = pr.code_section.nodes.items,
                 .size = bytecode_size,
+                .name_offset = text_name_offset,
             };
-            code_section.setNameOffset(@as(u32, @intCast(1 + cumulativeNameLen(self.section_names.items))));
-            try self.section_names.append(allocator, ".text");
             code_section.setOffset(current_offset);
             current_offset += code_section.size;
             try self.appendSection(allocator, .{ .code = code_section });
@@ -268,8 +279,12 @@ pub const Program = struct {
         // (debug.rs L197-234). No-op if pr.debug_sections is empty.
         try self.appendDebugSections(allocator, pr, current_offset);
 
-        // shstrtab sits at the end.
-        const shstrtab_name_offset = @as(u32, @intCast(shstrtabNameOffset(self.section_names.items)));
+        // shstrtab sits at the end. V3 gives it an EMPTY name — the
+        // name_offset points at the null byte between ".rodata" (or
+        // ".text" when no rodata) and the trailing ".s", not at ".s"
+        // itself. Matches Rust program.rs L137-141 (no +1 for the
+        // leading null in the V3 branch, unlike the V0-dynamic branch).
+        const shstrtab_name_offset = @as(u32, @intCast(cumulativeNameLen(self.section_names.items)));
         var shstrtab = section_mod.ShStrTabSection{
             .name_offset = shstrtab_name_offset,
             .section_names = self.section_names.items,
@@ -278,13 +293,16 @@ pub const Program = struct {
         current_offset.* += shstrtab.paddedSize();
         try self.appendSection(allocator, .{ .shstrtab = shstrtab });
 
-        // Program headers — V3 uses fixed virtual addresses.
+        // Program headers — V3 uses fixed virtual addresses. Rodata PH
+        // uses the PADDED rodata size (matches Rust DataSection::size())
+        // so the code segment starts on an 8-byte boundary.
         if (has_rodata) {
+            const padded_rodata_size = (rodata_size + 7) & ~@as(u64, 7);
             const rodata_offset = base_offset;
-            const bytecode_offset = base_offset + rodata_size;
+            const bytecode_offset = base_offset + padded_rodata_size;
             try self.appendProgramHeader(
                 allocator,
-                ProgramHeader.newLoad(rodata_offset, rodata_size, false, .V3),
+                ProgramHeader.newLoad(rodata_offset, padded_rodata_size, false, .V3),
             );
             try self.appendProgramHeader(
                 allocator,

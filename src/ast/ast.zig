@@ -397,7 +397,15 @@ pub const AST = struct {
                     };
                     if (arch == .V3) {
                         inst.src = .{ .n = 0 };
-                        inst.imm = .{ .right = .{ .Int = @intCast(syscall_mod.murmur3_32(name)) } };
+                        // The syscall hash is a u32; bit-cast through i32 so
+                        // values with the top bit set (e.g. 0x9abcdef0) get
+                        // stored as negative i64 but still encode as the
+                        // same 4 bytes. `resolvedI32` at encode time accepts
+                        // [i32.min, i32.max] — a straight `@intCast` would
+                        // reject the upper half of u32.
+                        const hash_u32 = syscall_mod.murmur3_32(name);
+                        const hash_i32: i32 = @bitCast(hash_u32);
+                        inst.imm = .{ .right = .{ .Int = hash_i32 } };
                     } else {
                         // Mark as syscall: src=1, imm=-1. Phase D skips these.
                         inst.src = .{ .n = 1 };

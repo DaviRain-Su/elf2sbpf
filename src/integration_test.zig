@@ -144,24 +144,27 @@ test "integration: hello.o .text decodes as 7 valid instructions (with 1 lddw)" 
 /// End-to-end: parse ELF bytes → byteparser → AST → buildProgram →
 /// Program.fromParseResult → emitBytecode. Caller owns the returned bytes.
 fn runPipeline(allocator: std.mem.Allocator, elf_bytes: []const u8) ![]u8 {
+    return runPipelineArch(allocator, elf_bytes, .V0);
+}
+
+fn runPipelineArch(
+    allocator: std.mem.Allocator,
+    elf_bytes: []const u8,
+    arch: lib.SbpfArch,
+) ![]u8 {
     const elf_file = try lib.ElfFile.parse(elf_bytes);
 
     var bpr = try lib.byteparser.byteParse(allocator, &elf_file);
     defer bpr.deinit();
 
     var ast = try lib.AST.fromByteParse(allocator, &bpr);
-    // buildProgram consumes ast.nodes/rodata_nodes; keep the AST handle
-    // alive for the remaining (now-empty) list teardown.
 
-    // Convert ByteParseResult.debug → []ast.DebugSection (allocator-owned
-    // slice; ParseResult takes ownership after buildProgram consumes it).
     const debug_slice = try allocator.alloc(lib.ast.DebugSection, bpr.debug.entries.items.len);
     for (bpr.debug.entries.items, 0..) |e, i| {
         debug_slice[i] = .{ .name = e.name, .data = e.data };
     }
 
-    var parse_result = try ast.buildProgram(.V0, debug_slice);
-    // ParseResult owns the rest; ast itself is now empty.
+    var parse_result = try ast.buildProgram(arch, debug_slice);
     ast.deinit();
 
     defer parse_result.deinit(allocator);
@@ -325,6 +328,97 @@ test "integration: 9 zignocchio examples byte-match reference-shim" {
             }
             std.debug.print(
                 "[{s}] byte differ at offset 0x{x}: zig=0x{x:0>2} shim=0x{x:0>2}\n",
+                .{ g.name, first_diff, bytes[first_diff], g.shim_so[first_diff] },
+            );
+            return error.TestExpectedEqual;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D.1 — 9-example V3 byte-diff matrix. Same input `.o` files, but linked
+// through the V3 back-end against shim outputs produced with `--v3`.
+// ---------------------------------------------------------------------------
+
+const V3Golden = struct {
+    name: []const u8,
+    input: []const u8,
+    shim_so: []const u8,
+};
+
+const v3_goldens = [_]V3Golden{
+    .{
+        .name = "hello",
+        .input = @embedFile("testdata/hello.o"),
+        .shim_so = @embedFile("testdata/hello.v3.shim.so"),
+    },
+    .{
+        .name = "noop",
+        .input = @embedFile("testdata/noop.o"),
+        .shim_so = @embedFile("testdata/noop.v3.shim.so"),
+    },
+    .{
+        .name = "logonly",
+        .input = @embedFile("testdata/logonly.o"),
+        .shim_so = @embedFile("testdata/logonly.v3.shim.so"),
+    },
+    .{
+        .name = "counter",
+        .input = @embedFile("testdata/counter.o"),
+        .shim_so = @embedFile("testdata/counter.v3.shim.so"),
+    },
+    .{
+        .name = "vault",
+        .input = @embedFile("testdata/vault.o"),
+        .shim_so = @embedFile("testdata/vault.v3.shim.so"),
+    },
+    .{
+        .name = "transfer-sol",
+        .input = @embedFile("testdata/transfer-sol.o"),
+        .shim_so = @embedFile("testdata/transfer-sol.v3.shim.so"),
+    },
+    .{
+        .name = "pda-storage",
+        .input = @embedFile("testdata/pda-storage.o"),
+        .shim_so = @embedFile("testdata/pda-storage.v3.shim.so"),
+    },
+    .{
+        .name = "escrow",
+        .input = @embedFile("testdata/escrow.o"),
+        .shim_so = @embedFile("testdata/escrow.v3.shim.so"),
+    },
+    .{
+        .name = "token-vault",
+        .input = @embedFile("testdata/token-vault.o"),
+        .shim_so = @embedFile("testdata/token-vault.v3.shim.so"),
+    },
+};
+
+test "integration: 9 zignocchio examples byte-match reference-shim under V3" {
+    const allocator = testing.allocator;
+
+    for (v3_goldens) |g| {
+        const bytes = runPipelineArch(allocator, g.input, .V3) catch |err| {
+            std.debug.print("[v3/{s}] pipeline failed: {s}\n", .{ g.name, @errorName(err) });
+            return err;
+        };
+        defer allocator.free(bytes);
+
+        if (bytes.len != g.shim_so.len) {
+            std.debug.print(
+                "[v3/{s}] length mismatch: zig={d} shim={d}\n",
+                .{ g.name, bytes.len, g.shim_so.len },
+            );
+            return error.TestExpectedEqual;
+        }
+
+        if (!std.mem.eql(u8, bytes, g.shim_so)) {
+            var first_diff: usize = 0;
+            while (first_diff < bytes.len and bytes[first_diff] == g.shim_so[first_diff]) {
+                first_diff += 1;
+            }
+            std.debug.print(
+                "[v3/{s}] byte differ at offset 0x{x}: zig=0x{x:0>2} shim=0x{x:0>2}\n",
                 .{ g.name, first_diff, bytes[first_diff], g.shim_so[first_diff] },
             );
             return error.TestExpectedEqual;

@@ -1,6 +1,6 @@
 .{
     .name = .elf2sbpf,
-    .version = "0.4.0",
+    .version = "0.5.0",
     // Generated for this project; do not change (see Zig docs on package
     // identity — changing this value is considered hostile forking).
     .fingerprint = 0xd44fd21a1daffd7,

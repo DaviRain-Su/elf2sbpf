@@ -8,6 +8,7 @@ const ParsedArgs = union(enum) {
     run: struct {
         input_path: []const u8,
         output_path: []const u8,
+        arch: linker.SbpfArch,
     },
 };
 
@@ -17,17 +18,32 @@ fn parseArgv(args: []const []const u8) UsageError!ParsedArgs {
     {
         return .help;
     }
-    if (args.len == 3) {
-        return .{ .run = .{
-            .input_path = args[1],
-            .output_path = args[2],
-        } };
+    // Accept [--v0|--v3] anywhere among the positional args. Defaults to V0.
+    var arch: linker.SbpfArch = .V0;
+    var positional: [2][]const u8 = .{ "", "" };
+    var pos_idx: usize = 0;
+    for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--v0")) {
+            arch = .V0;
+        } else if (std.mem.eql(u8, arg, "--v3")) {
+            arch = .V3;
+        } else if (pos_idx < 2) {
+            positional[pos_idx] = arg;
+            pos_idx += 1;
+        } else {
+            return UsageError.InvalidArgs;
+        }
     }
-    return UsageError.InvalidArgs;
+    if (pos_idx != 2) return UsageError.InvalidArgs;
+    return .{ .run = .{
+        .input_path = positional[0],
+        .output_path = positional[1],
+        .arch = arch,
+    } };
 }
 
 fn printUsage(writer: anytype) !void {
-    try writer.writeAll("Usage: elf2sbpf <input.o> <output.so>\n");
+    try writer.writeAll("Usage: elf2sbpf [--v0|--v3] <input.o> <output.so>\n");
 }
 
 fn linkErrorExitCode(err: linker.LinkError) u8 {
@@ -74,7 +90,10 @@ fn runCli(
             const elf_bytes = cwd.readFileAlloc(io, run.input_path, allocator, .limited(std.math.maxInt(usize))) catch return .read_error;
             defer allocator.free(elf_bytes);
 
-            const out = linker.linkProgram(allocator, elf_bytes) catch |err| return .{ .link_error = err };
+            const out = switch (run.arch) {
+                .V0 => linker.linkProgram(allocator, elf_bytes),
+                .V3 => linker.linkProgramV3(allocator, elf_bytes),
+            } catch |err| return .{ .link_error = err };
             defer allocator.free(out);
 
             cwd.writeFile(io, .{

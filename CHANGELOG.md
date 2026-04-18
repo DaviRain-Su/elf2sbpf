@@ -7,9 +7,50 @@ and [SemVer](https://semver.org/). Dates use the `YYYY-MM-DD` format.
 
 ## [Unreleased]
 
-- D.1 V3 arch — prioritized when Solana runtime pushes V3 as default
 - D.5 Windows support — prioritized if Windows users show up
-- D.6 cross-language frontends — strategic, no schedule
+- Comprehensive audit pass over v0.1 through v0.5 code/docs
+
+## [0.5.0] — 2026-04-18
+
+D.1 — SbpfArch V3 end-to-end.
+
+### Added
+
+- **`elf2sbpf.linkProgramV3(allocator, elf_bytes)`** — library entry
+  for the V3 back-end. Output is byte-identical to
+  `reference-shim --v3` for all 9 zignocchio examples
+- **CLI `--v3` / `--v0` flags**: `elf2sbpf --v3 in.o out.so`;
+  `--v0` is the default
+- **9 V3 goldens** committed as `src/testdata/<example>.v3.shim.so`;
+  new integration loop `9 zignocchio examples byte-match
+  reference-shim under V3`
+- **reference-shim `--v3` / `--v0` flags**: lets the oracle emit
+  either V0 or V3 (default V0); added `parse_bytecode_ex(bytes, arch)`
+
+### Fixed
+
+- **V3 `layoutV3`**: rodata PH uses padded rodata size (off-by-one
+  against shim before)
+- **V3 shstrtab name_offset**: in V3 the shstrtab's own `sh_name`
+  points at the empty string between `.rodata` and `.s`, not at
+  `.s` itself (matches Rust program.rs L137-141)
+- **V3 section_names canonical order** is `[".text", ".rodata"]`
+  even when the section table puts rodata first; shstrtab content
+  lays strings in the canonical order
+- **V3 syscall hash encoding**: in AST Phase C, bit-cast the u32
+  murmur3 hash through i32 so values with the top bit set (~1/2
+  of syscalls) don't trip `resolvedI32`'s `i32.max` check
+
+### Supported (now)
+
+- SBPF V0 (default, unchanged)
+- **SBPF V3** (new): fixed vaddrs (rodata @ 0, code @ 1<<32), no
+  PT_DYNAMIC, no dynamic relocation, static syscall resolution
+
+### Test counts
+
+370/370 tests green (was 368; +2 from the V3 sweep); 10 V0 byte-diff
+goldens + 9 V3 byte-diff goldens all MATCH.
 
 ## [0.4.0] — 2026-04-18
 
@@ -179,7 +220,8 @@ Ported from [blueshift-gg/sbpf-linker](https://github.com/blueshift-gg/sbpf-link
 
 ---
 
-[Unreleased]: https://github.com/DaviRain-Su/elf2sbpf/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/DaviRain-Su/elf2sbpf/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.5.0
 [0.4.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.4.0
 [0.3.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.3.0
 [0.2.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.2.0
