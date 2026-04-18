@@ -14,9 +14,9 @@ const ElfFile = @import("reader.zig").ElfFile;
 const util = @import("../common/util.zig");
 
 pub const SectionError = error{
-    IndexOutOfRange,     // section index >= sh_count
-    NameOutOfRange,      // sh_name points outside shstrtab
-    DataOutOfRange,      // sh_offset + sh_size > bytes.len (for PROGBITS-style)
+    IndexOutOfRange, // section index >= sh_count
+    NameOutOfRange, // sh_name points outside shstrtab
+    DataOutOfRange, // sh_offset + sh_size > bytes.len (for PROGBITS-style)
 };
 
 /// Zero-copy handle over one section. `header` is by value (64 bytes copied
@@ -75,7 +75,7 @@ pub fn buildSection(file: *const ElfFile, idx: u16) SectionError!Section {
 
     // Name resolution via shstrtab. sh_name is a byte offset.
     const name_off: usize = @intCast(hdr.sh_name);
-    if (name_off > file.shstrtab.len) return SectionError.NameOutOfRange;
+    if (name_off >= file.shstrtab.len) return SectionError.NameOutOfRange;
     const name = util.cstrAt(file.shstrtab, name_off);
 
     // Data slicing. SHT_NULL has sh_offset=0 and sh_size=0, giving an empty slice.
@@ -117,19 +117,22 @@ fn makeThreeSectionElf() [276]u8 {
     var buf: [276]u8 = @splat(0);
 
     // --- Elf64_Ehdr ---
-    buf[0] = 0x7f; buf[1] = 'E'; buf[2] = 'L'; buf[3] = 'F';
+    buf[0] = 0x7f;
+    buf[1] = 'E';
+    buf[2] = 'L';
+    buf[3] = 'F';
     buf[elf.EI.CLASS] = elf.ELFCLASS64;
     buf[elf.EI.DATA] = elf.ELFDATA2LSB;
     buf[elf.EI.VERSION] = 1;
-    buf[16] = 3;             // e_type = ET_DYN
-    buf[18] = 247;           // e_machine = EM_BPF
-    buf[20] = 1;             // e_version = 1
+    buf[16] = 3; // e_type = ET_DYN
+    buf[18] = 247; // e_machine = EM_BPF
+    buf[20] = 1; // e_version = 1
     // e_shoff = 64 (section headers start right after ehdr)
     std.mem.writeInt(u64, buf[40..48], 64, .little);
-    buf[52] = 64;            // e_ehsize
-    buf[58] = 64;            // e_shentsize
-    buf[60] = 3;             // e_shnum (3 sections)
-    buf[62] = 2;             // e_shstrndx (index 2 = .shstrtab)
+    buf[52] = 64; // e_ehsize
+    buf[58] = 64; // e_shentsize
+    buf[60] = 3; // e_shnum (3 sections)
+    buf[62] = 2; // e_shstrndx (index 2 = .shstrtab)
 
     // --- Section header [0]: SHT_NULL, all zeros. Already zeroed. ---
 
@@ -154,17 +157,30 @@ fn makeThreeSectionElf() [276]u8 {
     std.mem.writeInt(u64, buf[224..232], 17, .little);
 
     // --- .text data at offset 256 ---
-    buf[256] = 0xde; buf[257] = 0xad; buf[258] = 0xbe;
+    buf[256] = 0xde;
+    buf[257] = 0xad;
+    buf[258] = 0xbe;
 
     // --- shstrtab data at offset 259 ---
     //     "\0.text\0.shstrtab\0"
     //       ^  ^     ^
     //       0  1     7
     buf[259] = 0;
-    buf[260] = '.'; buf[261] = 't'; buf[262] = 'e'; buf[263] = 'x'; buf[264] = 't';
+    buf[260] = '.';
+    buf[261] = 't';
+    buf[262] = 'e';
+    buf[263] = 'x';
+    buf[264] = 't';
     buf[265] = 0;
-    buf[266] = '.'; buf[267] = 's'; buf[268] = 'h'; buf[269] = 's'; buf[270] = 't';
-    buf[271] = 'r'; buf[272] = 't'; buf[273] = 'a'; buf[274] = 'b';
+    buf[266] = '.';
+    buf[267] = 's';
+    buf[268] = 'h';
+    buf[269] = 's';
+    buf[270] = 't';
+    buf[271] = 'r';
+    buf[272] = 't';
+    buf[273] = 'a';
+    buf[274] = 'b';
     buf[275] = 0;
 
     return buf;
