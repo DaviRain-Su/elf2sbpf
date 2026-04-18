@@ -33,26 +33,26 @@ pub const SymbolError = error{
 };
 
 pub const SymTableKind = enum {
-    symtab,  // SHT_SYMTAB — static symbol table (in .o files)
-    dynsym,  // SHT_DYNSYM — dynamic symbol table (in .so files)
+    symtab, // SHT_SYMTAB — static symbol table (in .o files)
+    dynsym, // SHT_DYNSYM — dynamic symbol table (in .so files)
 };
 
 pub const SymbolKind = enum {
-    NoType,     // STT_NOTYPE
-    Object,     // STT_OBJECT — data
-    Func,       // STT_FUNC — code
-    Section,    // STT_SECTION — identifies a section
-    File,       // STT_FILE
-    Common,     // STT_COMMON
-    Tls,        // STT_TLS
-    Unknown,    // any other value
+    NoType, // STT_NOTYPE
+    Object, // STT_OBJECT — data
+    Func, // STT_FUNC — code
+    Section, // STT_SECTION — identifies a section
+    File, // STT_FILE
+    Common, // STT_COMMON
+    Tls, // STT_TLS
+    Unknown, // any other value
 };
 
 pub const SymbolBinding = enum {
-    Local,      // STB_LOCAL
-    Global,     // STB_GLOBAL
-    Weak,       // STB_WEAK
-    Unknown,    // any other value
+    Local, // STB_LOCAL
+    Global, // STB_GLOBAL
+    Weak, // STB_WEAK
+    Unknown, // any other value
 };
 
 /// Handle over a single symbol. `raw` is by-value to avoid input alignment
@@ -240,7 +240,10 @@ fn makeSymtabElf(out: *[512]u8) void {
     @memcpy(out[shstrtab_off .. shstrtab_off + shstrtab_content.len], shstrtab_content);
 
     // --- Elf64_Ehdr ---
-    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[0] = 0x7f;
+    out[1] = 'E';
+    out[2] = 'L';
+    out[3] = 'F';
     out[elf.EI.CLASS] = elf.ELFCLASS64;
     out[elf.EI.DATA] = elf.ELFDATA2LSB;
     out[elf.EI.VERSION] = 1;
@@ -250,28 +253,28 @@ fn makeSymtabElf(out: *[512]u8) void {
     std.mem.writeInt(u64, out[40..48], 64, .little); // e_shoff
     out[52] = 64;
     out[58] = 64;
-    out[60] = 4;   // e_shnum (4 sections)
-    out[62] = 3;   // e_shstrndx = index of .shstrtab
+    out[60] = 4; // e_shnum (4 sections)
+    out[62] = 3; // e_shstrndx = index of .shstrtab
 
     // --- Section header [1]: .symtab at offset 128 ---
-    std.mem.writeInt(u32, out[128..132], 1, .little);    // sh_name: ".symtab" starts at 1
+    std.mem.writeInt(u32, out[128..132], 1, .little); // sh_name: ".symtab" starts at 1
     std.mem.writeInt(u32, out[132..136], elf.SHT_SYMTAB, .little);
-    std.mem.writeInt(u64, out[152..160], 320, .little);  // sh_offset
-    std.mem.writeInt(u64, out[160..168], 72, .little);   // sh_size (3 × 24)
-    std.mem.writeInt(u32, out[168..172], 2, .little);    // sh_link → .strtab at idx 2
-    std.mem.writeInt(u64, out[184..192], 24, .little);   // sh_entsize
+    std.mem.writeInt(u64, out[152..160], 320, .little); // sh_offset
+    std.mem.writeInt(u64, out[160..168], 72, .little); // sh_size (3 × 24)
+    std.mem.writeInt(u32, out[168..172], 2, .little); // sh_link → .strtab at idx 2
+    std.mem.writeInt(u64, out[184..192], 24, .little); // sh_entsize
 
     // --- Section header [2]: .strtab at offset 192 ---
-    std.mem.writeInt(u32, out[192..196], 9, .little);    // sh_name: ".strtab" at 9
+    std.mem.writeInt(u32, out[192..196], 9, .little); // sh_name: ".strtab" at 9
     std.mem.writeInt(u32, out[196..200], elf.SHT_STRTAB, .little);
-    std.mem.writeInt(u64, out[216..224], 392, .little);  // sh_offset
-    std.mem.writeInt(u64, out[224..232], 16, .little);   // sh_size
+    std.mem.writeInt(u64, out[216..224], 392, .little); // sh_offset
+    std.mem.writeInt(u64, out[224..232], 16, .little); // sh_size
 
     // --- Section header [3]: .shstrtab at offset 256 ---
-    std.mem.writeInt(u32, out[256..260], 17, .little);   // sh_name: ".shstrtab" at 17
+    std.mem.writeInt(u32, out[256..260], 17, .little); // sh_name: ".shstrtab" at 17
     std.mem.writeInt(u32, out[260..264], elf.SHT_STRTAB, .little);
-    std.mem.writeInt(u64, out[280..288], 408, .little);  // sh_offset
-    std.mem.writeInt(u64, out[288..296], 27, .little);   // sh_size
+    std.mem.writeInt(u64, out[280..288], 408, .little); // sh_offset
+    std.mem.writeInt(u64, out[288..296], 27, .little); // sh_size
 
     // --- Symbol table content at offset 320 (3 × 24 = 72 bytes) ---
     const sym_base: usize = 320;
@@ -280,9 +283,9 @@ fn makeSymtabElf(out: *[512]u8) void {
 
     // Symbol 1: "entrypoint", FUNC + GLOBAL, section 1, value 0, size 64
     const sym1 = sym_base + 24;
-    std.mem.writeInt(u32, out[sym1 .. sym1 + 4][0..4], 1, .little);  // st_name: "entrypoint" at 1
+    std.mem.writeInt(u32, out[sym1 .. sym1 + 4][0..4], 1, .little); // st_name: "entrypoint" at 1
     out[sym1 + 4] = (@as(u8, elf.STB_GLOBAL) << 4) | @as(u8, elf.STT_FUNC); // st_info
-    out[sym1 + 5] = 0;                                               // st_other
+    out[sym1 + 5] = 0; // st_other
     std.mem.writeInt(u16, out[sym1 + 6 .. sym1 + 8][0..2], 1, .little); // st_shndx: section 1
     std.mem.writeInt(u64, out[sym1 + 8 .. sym1 + 16][0..8], 0, .little); // st_value
     std.mem.writeInt(u64, out[sym1 + 16 .. sym1 + 24][0..8], 64, .little); // st_size
@@ -335,11 +338,16 @@ test "iterSymbols: iterate all 3 symbols and decode fields" {
 test "iterSymbols: NoSymbolTable when no SHT_SYMTAB present" {
     // Minimal header with no sections — no symbol table.
     var out: [@sizeOf(elf.Elf64_Ehdr)]u8 = @splat(0);
-    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[0] = 0x7f;
+    out[1] = 'E';
+    out[2] = 'L';
+    out[3] = 'F';
     out[elf.EI.CLASS] = elf.ELFCLASS64;
     out[elf.EI.DATA] = elf.ELFDATA2LSB;
     out[elf.EI.VERSION] = 1;
-    out[16] = 3; out[18] = 247; out[20] = 1;
+    out[16] = 3;
+    out[18] = 247;
+    out[20] = 1;
     out[52] = 64;
     out[58] = 64;
     const file = try ElfFile.parse(&out);

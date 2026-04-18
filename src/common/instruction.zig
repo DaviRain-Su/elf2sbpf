@@ -166,12 +166,17 @@ pub const Instruction = struct {
     /// Fields not valid for an opcode are set to null; this follows the
     /// Rust decoder's convention so that `toBytes` can write zeros for them.
     ///
-    /// For Solana syscall resolution (Call opcode with src=0): Rust's decoder
-    /// looks up the imm value in the SYSCALLS table and returns `.left(name)`.
-    /// We do not have that table yet (B.9 — syscalls.zig), so for now we
-    /// always return `.right(Number.Int(imm))`. The byteparser overwrites imm
-    /// with `.left(symbol_name)` via ELF relocations anyway, so this is
-    /// correct for elf2sbpf's pipeline.
+    /// Syscall resolution (Call opcode with src=0):
+    ///   - Reverse-look up the 32-bit imm in `syscall_mod.REGISTERED_SYSCALLS`
+    ///     (30 built-ins) + `thread_extra_syscalls` (caller-registered,
+    ///     since v0.4.0)
+    ///   - Match → `imm = .left(name)` so buildProgram Phase C can treat
+    ///     it as a dynamic syscall and emit the V0 dynsym / rel.dyn entry
+    ///     (or the V3 hash at the same bit pattern)
+    ///   - No match → `imm = .right(Number.Int(imm_raw))` — a numeric
+    ///     immediate, likely a pc-relative call where src=1 was expected
+    ///     but src=0 + unknown hash; the byteparser's relocation-rewrite
+    ///     pass may still upgrade it to `.left(name)` via ELF reloc info
     pub fn fromBytes(bytes: []const u8) DecodeError!Instruction {
         if (bytes.len < 8) return DecodeError.TooShort;
 

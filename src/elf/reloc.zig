@@ -31,12 +31,12 @@ pub const RelocError = error{
 /// BPF-specific relocation types. Values taken from
 /// 03-technical-spec.md §7.3, which cross-references the LLVM BPF backend.
 pub const RelocType = enum(u32) {
-    BPF_64_64 = 1,        // 64-bit absolute (lddw target)
-    BPF_64_ABS64 = 2,     // alternative encoding for the same meaning
+    BPF_64_64 = 1, // 64-bit absolute (lddw target)
+    BPF_64_ABS64 = 2, // alternative encoding for the same meaning
     BPF_64_ABS32 = 3,
     BPF_64_NODYLD32 = 4,
-    BPF_64_32 = 10,       // 32-bit PC-relative (call target)
-    _,                    // non-exhaustive: any future BPF reloc type
+    BPF_64_32 = 10, // 32-bit PC-relative (call target)
+    _, // non-exhaustive: any future BPF reloc type
 };
 
 /// A single decoded relocation entry. Works for both Elf64_Rel (no addend,
@@ -169,33 +169,39 @@ fn makeRelElf(out: *[512]u8) void {
     @memcpy(out[shstrtab_off .. shstrtab_off + shstrtab_content.len], shstrtab_content);
 
     // --- Ehdr ---
-    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[0] = 0x7f;
+    out[1] = 'E';
+    out[2] = 'L';
+    out[3] = 'F';
     out[elf.EI.CLASS] = elf.ELFCLASS64;
     out[elf.EI.DATA] = elf.ELFDATA2LSB;
     out[elf.EI.VERSION] = 1;
-    out[16] = 3; out[18] = 247; out[20] = 1;
+    out[16] = 3;
+    out[18] = 247;
+    out[20] = 1;
     std.mem.writeInt(u64, out[40..48], 64, .little);
-    out[52] = 64; out[58] = 64;
-    out[60] = 4;    // e_shnum
-    out[62] = 3;    // e_shstrndx
+    out[52] = 64;
+    out[58] = 64;
+    out[60] = 4; // e_shnum
+    out[62] = 3; // e_shstrndx
 
     // --- SH[1]: .text at offset 128 ---
     std.mem.writeInt(u32, out[128..132], 1, .little);
     std.mem.writeInt(u32, out[132..136], elf.SHT_PROGBITS, .little);
     std.mem.writeInt(u64, out[152..160], 320, .little); // sh_offset
-    std.mem.writeInt(u64, out[160..168], 16, .little);  // sh_size
+    std.mem.writeInt(u64, out[160..168], 16, .little); // sh_size
 
     // --- SH[2]: .rel.text at offset 192 ---
-    std.mem.writeInt(u32, out[192..196], 7, .little);   // sh_name
+    std.mem.writeInt(u32, out[192..196], 7, .little); // sh_name
     std.mem.writeInt(u32, out[196..200], elf.SHT_REL, .little);
     std.mem.writeInt(u64, out[216..224], 336, .little); // sh_offset
-    std.mem.writeInt(u64, out[224..232], 32, .little);  // sh_size (2 × 16)
-    std.mem.writeInt(u32, out[232..236], 0, .little);   // sh_link: symtab idx (unused here)
-    std.mem.writeInt(u32, out[236..240], 1, .little);   // sh_info: which section relocated (= 1 for .text)
-    std.mem.writeInt(u64, out[248..256], 16, .little);  // sh_entsize
+    std.mem.writeInt(u64, out[224..232], 32, .little); // sh_size (2 × 16)
+    std.mem.writeInt(u32, out[232..236], 0, .little); // sh_link: symtab idx (unused here)
+    std.mem.writeInt(u32, out[236..240], 1, .little); // sh_info: which section relocated (= 1 for .text)
+    std.mem.writeInt(u64, out[248..256], 16, .little); // sh_entsize
 
     // --- SH[3]: .shstrtab at offset 256 ---
-    std.mem.writeInt(u32, out[256..260], 17, .little);  // sh_name
+    std.mem.writeInt(u32, out[256..260], 17, .little); // sh_name
     std.mem.writeInt(u32, out[260..264], elf.SHT_STRTAB, .little);
     std.mem.writeInt(u64, out[280..288], shstrtab_off, .little);
     std.mem.writeInt(u64, out[288..296], 27, .little);
@@ -251,7 +257,11 @@ test "iterRelocs: rejects non-relocation section" {
 
 test "RelocType is non-exhaustive (unknown values preserved)" {
     const r = Reloc{
-        .index = 0, .offset = 0, .type_raw = 999, .symbol_index = 0, .addend = null,
+        .index = 0,
+        .offset = 0,
+        .type_raw = 999,
+        .symbol_index = 0,
+        .addend = null,
     };
     // 999 is not one of the named variants, but @enumFromInt into a
     // non-exhaustive enum should still yield a valid enum value.

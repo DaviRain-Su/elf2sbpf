@@ -1,12 +1,17 @@
 // elf2sbpf library root.
 //
-// Per 02-architecture.md §3.4, all linker logic lives under this module so it
-// can be @import("elf2sbpf") by other Zig projects. main.zig will end up being
-// a thin wrapper over linkProgram (03-technical-spec.md §1.2).
+// Per 02-architecture.md §3.4, all linker logic lives under this module so
+// it can be `@import("elf2sbpf")` by other Zig projects. `main.zig` is a
+// thin wrapper over linkProgram (03-technical-spec.md §1.2).
 //
-// A.1 scaffold: stubbed LinkError enum and a not-yet-implemented linkProgram.
-// Individual layers (common / elf / parse / ast / emit) are added under their
-// own Epics — they'll be re-exported from this file as they come online.
+// Public entry points (stable across v0.x; see docs/library.md):
+//   - linkProgram(allocator, elf_bytes)            — V0 default
+//   - linkProgramV3(allocator, elf_bytes)          — V3 (since v0.5.0)
+//   - linkProgramWithSyscalls(.., extras)          — extra syscalls (v0.4.0+)
+//
+// Layers (common / elf / parse / ast / emit) are re-exported below so
+// framework authors can compose custom pipelines; see `docs/library.md`
+// for the stability tier table.
 
 const std = @import("std");
 

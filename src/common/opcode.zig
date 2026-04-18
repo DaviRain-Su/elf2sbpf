@@ -21,19 +21,19 @@ const std = @import("std");
 /// byte fields (dst / src / off / imm) to populate and which must be zero.
 /// Mirrors Rust sbpf-common::opcode::OperationType (opcode.rs L16-30).
 pub const OperationType = enum {
-    LoadImmediate,   // Lddw (16 bytes: imm spans two slots)
-    LoadMemory,      // Ldxb/h/w/dw — dst, src, off
-    StoreImmediate,  // Stb/h/w/dw — dst, off, imm
-    StoreRegister,   // Stxb/h/w/dw — dst, src, off
+    LoadImmediate, // Lddw (16 bytes: imm spans two slots)
+    LoadMemory, // Ldxb/h/w/dw — dst, src, off
+    StoreImmediate, // Stb/h/w/dw — dst, off, imm
+    StoreRegister, // Stxb/h/w/dw — dst, src, off
     BinaryImmediate, // ALU *Imm (incl. Le/Be/Hor64Imm) — dst, imm
-    BinaryRegister,  // ALU *Reg — dst, src
-    Unary,           // Neg32/Neg64 — dst only
-    Jump,            // Ja — off only
-    JumpImmediate,   // Jxxx*Imm — dst, off, imm
-    JumpRegister,    // Jxxx*Reg — dst, src, off
-    CallImmediate,   // Call — src (0/1), imm (syscall hash or relative offset)
-    CallRegister,    // Callx — dst
-    Exit,            // Exit — no fields
+    BinaryRegister, // ALU *Reg — dst, src
+    Unary, // Neg32/Neg64 — dst only
+    Jump, // Ja — off only
+    JumpImmediate, // Jxxx*Imm — dst, off, imm
+    JumpRegister, // Jxxx*Reg — dst, src, off
+    CallImmediate, // Call — src (0/1), imm (syscall hash or relative offset)
+    CallRegister, // Callx — dst
+    Exit, // Exit — no fields
 };
 
 pub const Opcode = enum(u8) {
@@ -213,48 +213,121 @@ pub const Opcode = enum(u8) {
             .Stxb, .Stxh, .Stxw, .Stxdw => .StoreRegister,
 
             // 32-bit ALU Imm (standard)
-            .Add32Imm, .Sub32Imm, .Mul32Imm, .Div32Imm,
-            .Or32Imm,  .And32Imm, .Lsh32Imm, .Rsh32Imm,
-            .Mod32Imm, .Xor32Imm, .Mov32Imm, .Arsh32Imm,
+            .Add32Imm,
+            .Sub32Imm,
+            .Mul32Imm,
+            .Div32Imm,
+            .Or32Imm,
+            .And32Imm,
+            .Lsh32Imm,
+            .Rsh32Imm,
+            .Mod32Imm,
+            .Xor32Imm,
+            .Mov32Imm,
+            .Arsh32Imm,
             // 32-bit ALU Imm (extended)
-            .Lmul32Imm, .Udiv32Imm, .Urem32Imm, .Sdiv32Imm, .Srem32Imm,
+            .Lmul32Imm,
+            .Udiv32Imm,
+            .Urem32Imm,
+            .Sdiv32Imm,
+            .Srem32Imm,
             // Endian (treated as BinaryImmediate)
-            .Le, .Be,
+            .Le,
+            .Be,
             // 64-bit ALU Imm (standard)
-            .Add64Imm, .Sub64Imm, .Mul64Imm, .Div64Imm,
-            .Or64Imm,  .And64Imm, .Lsh64Imm, .Rsh64Imm,
-            .Mod64Imm, .Xor64Imm, .Mov64Imm, .Arsh64Imm,
+            .Add64Imm,
+            .Sub64Imm,
+            .Mul64Imm,
+            .Div64Imm,
+            .Or64Imm,
+            .And64Imm,
+            .Lsh64Imm,
+            .Rsh64Imm,
+            .Mod64Imm,
+            .Xor64Imm,
+            .Mov64Imm,
+            .Arsh64Imm,
             .Hor64Imm,
             // 64-bit ALU Imm (extended)
-            .Lmul64Imm, .Uhmul64Imm, .Udiv64Imm, .Urem64Imm,
-            .Shmul64Imm, .Sdiv64Imm, .Srem64Imm,
+            .Lmul64Imm,
+            .Uhmul64Imm,
+            .Udiv64Imm,
+            .Urem64Imm,
+            .Shmul64Imm,
+            .Sdiv64Imm,
+            .Srem64Imm,
             => .BinaryImmediate,
 
             // 32-bit ALU Reg (standard)
-            .Add32Reg, .Sub32Reg, .Mul32Reg, .Div32Reg,
-            .Or32Reg,  .And32Reg, .Lsh32Reg, .Rsh32Reg,
-            .Mod32Reg, .Xor32Reg, .Mov32Reg, .Arsh32Reg,
+            .Add32Reg,
+            .Sub32Reg,
+            .Mul32Reg,
+            .Div32Reg,
+            .Or32Reg,
+            .And32Reg,
+            .Lsh32Reg,
+            .Rsh32Reg,
+            .Mod32Reg,
+            .Xor32Reg,
+            .Mov32Reg,
+            .Arsh32Reg,
             // 32-bit ALU Reg (extended)
-            .Lmul32Reg, .Udiv32Reg, .Urem32Reg, .Sdiv32Reg, .Srem32Reg,
+            .Lmul32Reg,
+            .Udiv32Reg,
+            .Urem32Reg,
+            .Sdiv32Reg,
+            .Srem32Reg,
             // 64-bit ALU Reg (standard)
-            .Add64Reg, .Sub64Reg, .Mul64Reg, .Div64Reg,
-            .Or64Reg,  .And64Reg, .Lsh64Reg, .Rsh64Reg,
-            .Mod64Reg, .Xor64Reg, .Mov64Reg, .Arsh64Reg,
+            .Add64Reg,
+            .Sub64Reg,
+            .Mul64Reg,
+            .Div64Reg,
+            .Or64Reg,
+            .And64Reg,
+            .Lsh64Reg,
+            .Rsh64Reg,
+            .Mod64Reg,
+            .Xor64Reg,
+            .Mov64Reg,
+            .Arsh64Reg,
             // 64-bit ALU Reg (extended)
-            .Lmul64Reg, .Uhmul64Reg, .Udiv64Reg, .Urem64Reg,
-            .Shmul64Reg, .Sdiv64Reg, .Srem64Reg,
+            .Lmul64Reg,
+            .Uhmul64Reg,
+            .Udiv64Reg,
+            .Urem64Reg,
+            .Shmul64Reg,
+            .Sdiv64Reg,
+            .Srem64Reg,
             => .BinaryRegister,
 
             .Neg32, .Neg64 => .Unary,
 
             .Ja => .Jump,
 
-            .JeqImm, .JgtImm, .JgeImm, .JltImm, .JleImm, .JsetImm,
-            .JneImm, .JsgtImm, .JsgeImm, .JsltImm, .JsleImm,
+            .JeqImm,
+            .JgtImm,
+            .JgeImm,
+            .JltImm,
+            .JleImm,
+            .JsetImm,
+            .JneImm,
+            .JsgtImm,
+            .JsgeImm,
+            .JsltImm,
+            .JsleImm,
             => .JumpImmediate,
 
-            .JeqReg, .JgtReg, .JgeReg, .JltReg, .JleReg, .JsetReg,
-            .JneReg, .JsgtReg, .JsgeReg, .JsltReg, .JsleReg,
+            .JeqReg,
+            .JgtReg,
+            .JgeReg,
+            .JltReg,
+            .JleReg,
+            .JsetReg,
+            .JneReg,
+            .JsgtReg,
+            .JsgeReg,
+            .JsltReg,
+            .JsleReg,
             => .JumpRegister,
 
             .Call => .CallImmediate,
