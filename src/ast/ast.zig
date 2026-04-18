@@ -503,8 +503,9 @@ fn isSyscallCandidate(
         .left => |label| label,
         .right => return false,
     };
-    _ = resolveLabel(label_map, numeric_labels, current_idx, label_name) catch
-        return true;
+    _ = resolveLabel(label_map, numeric_labels, current_idx, label_name) catch {
+        return std.mem.startsWith(u8, label_name, "sol_");
+    };
     return false;
 }
 
@@ -733,6 +734,24 @@ test "buildProgram: ordinary symbolic call resolves as relative call" {
     try testing.expectEqual(@as(usize, 0), pr.relocation_data.entries.items.len);
     try testing.expectEqual(@as(usize, 0), pr.dynamic_symbols.entries.items.len);
     try testing.expect(pr.prog_is_static);
+}
+
+test "buildProgram: unresolved non-syscall call returns UndefinedLabel" {
+    var ast = AST.init(testing.allocator);
+    defer ast.deinit();
+    ast.setTextSize(8);
+
+    const call_inst = instruction_mod.Instruction{
+        .opcode = .Call,
+        .dst = null,
+        .src = null,
+        .off = null,
+        .imm = .{ .left = "unknown_target" },
+        .span = .{ .start = 0, .end = 8 },
+    };
+    try ast.pushNode(.{ .Instruction = .{ .instruction = call_inst, .offset = 0 } });
+
+    try testing.expectError(AST.BuildProgramError.UndefinedLabel, ast.buildProgram(.V0, &.{}));
 }
 
 test "buildProgram: jump label resolution" {
