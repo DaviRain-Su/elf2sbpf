@@ -18,3 +18,4 @@ reference-shim/Cargo.lock
 
 # macOS
 .DS_Store
+.pi/
