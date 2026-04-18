@@ -1950,6 +1950,66 @@ loader 会拒绝加载。
 **F.12 `SectionType` 分派**（`union(enum)` 把 9 个 section 类型
 统一成同一接口，为 Epic G 的 section header table 写入做准备）。
 
+---
+
+## F.11 — DebugSection pass-through
+
+**日期**：2026-04-18
+**commit**：待推送
+**耗时**：约 20min
+
+### 做了什么
+
+在 `src/emit/section_types.zig` 加 `DebugSection`（~50 行）+ 3 个单测：
+
+```zig
+pub const DebugSection = struct {
+    section_name: []const u8,
+    name_offset: u32,
+    data: []const u8,      // 借用 byteparser.scanDebugSections 的切片
+    offset: u64 = 0,
+
+    pub fn bytecode(self, allocator) ![]u8  // 原字节 copy
+    pub fn sectionHeaderBytecode(self, *[64]u8) void
+};
+```
+
+### 关键字段
+
+- `SHT_PROGBITS`，**flags=0**（既不 `ALLOC` 也不 `WRITE` 也不 `EXECINSTR`）
+  —— 这是 debug section 跟其他 section 最大的区别：loader 不会把它们
+  映射到虚拟机内存
+- `sh_addr=0`（没有运行时地址）
+- `sh_addralign=1`（debug 信息不要求对齐；原样透传）
+- 不做任何 padding，`sh_size == data.len`
+
+### 为什么不拷贝就传引用？
+
+Rust 版本就是用 `&[u8]` 引用来自 `ParseResult` 的 `debug_sections`，
+emit 时再 copy。Zig 这里同样沿用借用切片：所有权由 `ParseResult`
+持有，DebugSection 只是一个"视图 + 元信息"。Epic G 的
+`Program::fromParseResult` 会为每个 `DebugSection` payload 建一个
+`DebugSection` emit 对象。
+
+### 新增测试（3 个）
+
+- `DebugSection: bytecode is a verbatim copy of the input`
+- `DebugSection: empty data yields zero-length section`
+- `DebugSection: header uses SHT_PROGBITS with zero flags and align 1`
+
+### 验收
+
+- 322/322 tests 全绿（lib 158 + exe 164，新增 3 × 2 = 6 tests）
+- section_types.zig 从 992 行 → 约 1050 行
+
+### 下一任务
+
+**F.12 `SectionType`** —— 把 9 个 section 类型统一到一个
+`union(enum)` 里，每个 variant 暴露同样的 `name()` / `size()` /
+`bytecode()` / `sectionHeaderBytecode()` 接口。Epic G 的
+`Program::emitBytecode` 将用这个 union 来统一迭代、放 section header
+表和计算 `e_shnum` / `sh_offset`。
+
 
 
 

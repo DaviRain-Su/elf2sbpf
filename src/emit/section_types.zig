@@ -631,6 +631,57 @@ pub const DynamicSection = struct {
 };
 
 // ---------------------------------------------------------------------------
+// DebugSection — pass-through for `.debug_*` / `.BTF` / other non-loadable
+// bytes preserved from the input ELF. The emit layer copies `data` verbatim
+// into the output; loader never maps these into VM memory.
+// ---------------------------------------------------------------------------
+
+pub const DebugSection = struct {
+    section_name: []const u8,
+    name_offset: u32,
+    data: []const u8,
+    offset: u64 = 0,
+
+    pub fn name(self: DebugSection) []const u8 {
+        return self.section_name;
+    }
+
+    pub fn setOffset(self: *DebugSection, o: u64) void {
+        self.offset = o;
+    }
+
+    pub fn size(self: DebugSection) u64 {
+        return self.data.len;
+    }
+
+    /// Verbatim copy of the preserved bytes. No padding, no realignment —
+    /// debug sections stay exactly as the input compiler emitted them.
+    pub fn bytecode(self: DebugSection, allocator: std.mem.Allocator) ![]u8 {
+        const buf = try allocator.alloc(u8, self.data.len);
+        errdefer allocator.free(buf);
+        @memcpy(buf, self.data);
+        return buf;
+    }
+
+    pub fn sectionHeaderBytecode(self: DebugSection, out: *[64]u8) void {
+        // SHT_PROGBITS, no flags (not loadable), alignment 1.
+        const sh = SectionHeader.init(
+            self.name_offset,
+            header_mod.SHT_PROGBITS,
+            0,
+            0,
+            self.offset,
+            self.size(),
+            0,
+            0,
+            1,
+            0,
+        );
+        sh.bytecode(out);
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -989,4 +1040,57 @@ test "DynamicSection: header uses SHT_DYNAMIC + ALLOC|WRITE" {
     );
     try testing.expectEqual(@as(u32, 5), std.mem.readInt(u32, out[40..44], .little));
     try testing.expectEqual(@as(u64, 16), std.mem.readInt(u64, out[56..64], .little));
+}
+
+test "DebugSection: bytecode is a verbatim copy of the input" {
+    const payload = [_]u8{ 0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03, 0x04 };
+    const sec = DebugSection{
+        .section_name = ".debug_info",
+        .name_offset = 17,
+        .data = &payload,
+    };
+    try testing.expectEqual(@as(u64, 9), sec.size());
+
+    const bytes = try sec.bytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualSlices(u8, &payload, bytes);
+}
+
+test "DebugSection: empty data yields zero-length section" {
+    const sec = DebugSection{
+        .section_name = ".debug_abbrev",
+        .name_offset = 29,
+        .data = &[_]u8{},
+    };
+    try testing.expectEqual(@as(u64, 0), sec.size());
+
+    const bytes = try sec.bytecode(testing.allocator);
+    defer testing.allocator.free(bytes);
+    try testing.expectEqual(@as(usize, 0), bytes.len);
+}
+
+test "DebugSection: header uses SHT_PROGBITS with zero flags and align 1" {
+    const payload = [_]u8{ 0x11, 0x22, 0x33 };
+    const sec = DebugSection{
+        .section_name = ".debug_line",
+        .name_offset = 41,
+        .data = &payload,
+        .offset = 0x2000,
+    };
+    var out: [64]u8 = undefined;
+    sec.sectionHeaderBytecode(&out);
+    // sh_name
+    try testing.expectEqual(@as(u32, 41), std.mem.readInt(u32, out[0..4], .little));
+    // sh_type == PROGBITS
+    try testing.expectEqual(@as(u32, header_mod.SHT_PROGBITS), std.mem.readInt(u32, out[4..8], .little));
+    // sh_flags == 0 (not loadable, not executable, not writable)
+    try testing.expectEqual(@as(u64, 0), std.mem.readInt(u64, out[8..16], .little));
+    // sh_addr == 0 (no VM mapping)
+    try testing.expectEqual(@as(u64, 0), std.mem.readInt(u64, out[16..24], .little));
+    // sh_offset
+    try testing.expectEqual(@as(u64, 0x2000), std.mem.readInt(u64, out[24..32], .little));
+    // sh_size
+    try testing.expectEqual(@as(u64, 3), std.mem.readInt(u64, out[32..40], .little));
+    // sh_addralign
+    try testing.expectEqual(@as(u64, 1), std.mem.readInt(u64, out[48..56], .little));
 }

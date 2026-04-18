@@ -456,9 +456,11 @@ Solana SBPF 特有结构。
     SHT_REL + ALLOC，`sh_link` 指向 dynsym、`sh_entsize=16`
   - **验收**：1 单测（r_info 位打包正确）
 
-- [ ] **F.11**：`emit/section_types.zig` — `DebugSection`
-  - 原样保留传入的字节（debug info reuse）
-  - **验收**：对有 debug 的输入（手构的），字节透传
+- [x] **F.11**：`emit/section_types.zig` — `DebugSection` ✅ 2026-04-18
+  - 持有 `section_name/name_offset/data/offset`，bytecode 返回原字节
+    copy（不补齐、不改位）
+  - SHT_PROGBITS + flags=0（不可加载）、`sh_addr=0`、`sh_addralign=1`
+  - **验收**：3 单测（非空 payload 透传、空 payload、header 字段）
 
 - [ ] **F.12**：`emit/section_types.zig` — SectionType 分派
   - `union(enum) SectionType { Null, Code, Data, ... }`
@@ -583,11 +585,11 @@ Solana SBPF 特有结构。
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
 | D — Byteparser | 9 | 9 | ✅ 完成 |
 | E — AST | 4 | 4 | ✅ 完成 |
-| F — ELF 输出层 | 12 | 10 | 进行中 (83%) |
+| F — ELF 输出层 | 12 | 11 | 进行中 (92%) |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 2 | 进行中（入口/错误处理已完成；主流程验收待 Epic G） |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **41** | **73%** |
+| **总计** | **56** | **42** | **75%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
