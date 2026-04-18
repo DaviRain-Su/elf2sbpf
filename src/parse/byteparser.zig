@@ -775,6 +775,14 @@ pub fn decodeTextSections(
         var off: usize = 0;
         while (off < data.len) {
             const remaining = data[off..];
+            if (remaining.len < 8) {
+                return DecodeTextError.TextSectionMisaligned;
+            }
+            const op = opcode_mod.Opcode.fromByte(remaining[0]) orelse
+                return DecodeTextError.InstructionDecodeFailed;
+            if (op == .Lddw and remaining.len < 16) {
+                return DecodeTextError.TextSectionMisaligned;
+            }
             const inst = instruction_mod.Instruction.fromBytes(remaining) catch
                 return DecodeTextError.InstructionDecodeFailed;
             const size: usize = @intCast(inst.getSize());
@@ -955,29 +963,24 @@ fn findInstructionAtOffset(text_scan: *TextScan, target: u64) ?*DecodedInstructi
     return null;
 }
 
-/// Build a lookup table: symbol_index → Symbol for O(1) symbol resolution.
-/// Used by rewriteRelocations and collectLddwTargets to avoid O(N*M) linear
-/// scans. Tries .symtab first, falls back to .dynsym if present.
-fn buildSymbolLookup(
+/// Build a lookup table from the symbol table at the given section index.
+/// This respects each relocation section's `sh_link` binding instead of
+/// doing a global .symtab/.dynsym fallback.
+fn buildSymbolLookupAt(
     allocator: std.mem.Allocator,
     file: *const elf_mod.ElfFile,
+    symtab_idx: u16,
 ) !std.ArrayList(symbol_mod.Symbol) {
     var table: std.ArrayList(symbol_mod.Symbol) = .empty;
     errdefer table.deinit(allocator);
 
-    // Try .symtab first (static object files), then .dynsym (linked .so).
-    const kinds = [_]symbol_mod.SymTableKind{ .symtab, .dynsym };
-    for (kinds) |kind| {
-        var sym_iter = file.iterSymbols(kind) catch continue;
-        while (sym_iter.next() catch null) |s| {
-            // Ensure the table is large enough to index by s.index
-            while (table.items.len <= s.index) {
-                try table.append(allocator, undefined);
-            }
-            table.items[s.index] = s;
+    var sym_iter = try file.iterSymbolsAt(symtab_idx);
+    while (sym_iter.next() catch null) |s| {
+        // Ensure the table is large enough to index by s.index
+        while (table.items.len <= s.index) {
+            try table.append(allocator, undefined);
         }
-        // If we found symbols, stop; don't merge both tables.
-        if (table.items.len > 0) break;
+        table.items[s.index] = s;
     }
     return table;
 }
@@ -1013,10 +1016,6 @@ pub fn rewriteRelocations(
     text_scan: *TextScan,
     owned_names: *std.ArrayList([]const u8),
 ) RewriteError!void {
-    // Pre-build symbol lookup table to avoid O(N*M) scans.
-    var sym_lookup = buildSymbolLookup(allocator, file) catch return;
-    defer sym_lookup.deinit(allocator);
-
     var sec_it = file.iterSections();
     while (sec_it.next() catch null) |rel_sec| {
         const kind = rel_sec.kind();
@@ -1028,6 +1027,18 @@ pub fn rewriteRelocations(
         if (info_raw > std.math.maxInt(u16)) continue;
         const target_sec_idx: u16 = @intCast(info_raw);
         const text_base = sections.textBaseByIndex(target_sec_idx) orelse continue;
+
+        // Bind to the symbol table referenced by this relocation section.
+        const symtab_idx_raw = rel_sec.header.sh_link;
+        if (symtab_idx_raw > std.math.maxInt(u16)) continue;
+        const symtab_idx: u16 = @intCast(symtab_idx_raw);
+
+        // Pre-build symbol lookup for this relocation section's symtab.
+        var sym_lookup = buildSymbolLookupAt(allocator, file, symtab_idx) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => continue,
+        };
+        defer sym_lookup.deinit(allocator);
 
         var rel_it = file.iterRelocations(rel_sec) catch continue;
         while (rel_it.next()) |r| {
@@ -1042,15 +1053,19 @@ pub fn rewriteRelocations(
 
             switch (inst.opcode) {
                 .Lddw => {
-                    // addend lives in the instruction's imm field (set at D.6
-                    // decode time from the raw bytes).
-                    const addend: u64 = blk: {
-                        if (inst.imm) |imm| switch (imm) {
-                            .right => |n| break :blk @bitCast(n.toI64()),
-                            else => break :blk 0,
+                    const addend: u64 = if (r.addend) |rela_addend|
+                        blk: {
+                            if (rela_addend < 0) return RewriteError.LddwTargetOutsideRodata;
+                            break :blk @intCast(rela_addend);
+                        }
+                    else
+                        blk: {
+                            if (inst.imm) |imm| switch (imm) {
+                                .right => |n| break :blk @bitCast(n.toI64()),
+                                else => break :blk 0,
+                            };
+                            break :blk 0;
                         };
-                        break :blk 0;
-                    };
                     const sym_sec = sym.sectionIndex() orelse continue;
                     const key: RodataKey = .{ .section_index = sym_sec, .address = addend };
                     const slot = rodata_table.find(key) orelse {
@@ -1072,7 +1087,7 @@ pub fn rewriteRelocations(
                         };
                         const sym_sec = sym.sectionIndex() orelse continue;
 
-                        var named_iter = file.iterSymbols(.symtab) catch continue;
+                        var named_iter = file.iterSymbolsAt(symtab_idx) catch continue;
                         var found: ?[]const u8 = null;
                         while (named_iter.next() catch null) |s| {
                             const s_sec = s.sectionIndex() orelse continue;
@@ -1469,8 +1484,11 @@ test "collectLddwTargets: hello.o finds 1 lddw addend at offset 0" {
     try testing.expectEqual(@as(usize, 1), targets.entries.items.len);
 
     const rodata_idx = sections.ro_sections.items[0].section.index;
-    const addends = targets.get(rodata_idx).?;
-    try testing.expectEqualSlices(u64, &.{0}, addends);
+    const addends_opt = targets.get(rodata_idx);
+    try testing.expect(addends_opt != null);
+    if (addends_opt) |addends| {
+        try testing.expectEqualSlices(u64, &.{0}, addends);
+    }
 }
 
 test "collectLddwTargets: follows relocation-linked dynsym table" {
@@ -1484,8 +1502,11 @@ test "collectLddwTargets: follows relocation-linked dynsym table" {
     defer targets.deinit();
 
     const rodata_idx = sections.ro_sections.items[0].section.index;
-    const addends = targets.get(rodata_idx).?;
-    try testing.expectEqualSlices(u64, &.{3}, addends);
+    const addends_opt = targets.get(rodata_idx);
+    try testing.expect(addends_opt != null);
+    if (addends_opt) |addends| {
+        try testing.expectEqualSlices(u64, &.{3}, addends);
+    }
 }
 
 test "collectLddwTargets: uses explicit RELA addend for lddw targets" {
@@ -1499,8 +1520,11 @@ test "collectLddwTargets: uses explicit RELA addend for lddw targets" {
     defer targets.deinit();
 
     const rodata_idx = sections.ro_sections.items[0].section.index;
-    const addends = targets.get(rodata_idx).?;
-    try testing.expectEqualSlices(u64, &.{9}, addends);
+    const addends_opt = targets.get(rodata_idx);
+    try testing.expect(addends_opt != null);
+    if (addends_opt) |addends| {
+        try testing.expectEqualSlices(u64, &.{9}, addends);
+    }
 }
 
 test "gapFillRodata: hello.o synthesizes 1 anon entry covering the whole rodata" {
@@ -1850,6 +1874,47 @@ test "rewriteRelocations: hello.o lddw gets rodata label" {
     }
 }
 
+test "rewriteRelocations: RELA lddw uses explicit addend for rodata lookup" {
+    const bytes = makeRelaLddwElf();
+    const file = try elf_mod.ElfFile.parse(&bytes);
+
+    var sections = try scanSections(testing.allocator, &file);
+    defer sections.deinit();
+    var table = RodataTable{
+        .allocator = testing.allocator,
+        .keys = .empty,
+        .offsets = .empty,
+        .names = .empty,
+        .total_size = 16,
+    };
+    defer table.deinit();
+    const rodata_idx = sections.ro_sections.items[0].section.index;
+    try table.keys.append(testing.allocator, .{ .section_index = rodata_idx, .address = 9 });
+    try table.offsets.append(testing.allocator, 0);
+    try table.names.append(testing.allocator, "msg");
+    var text_scan = try decodeTextSections(testing.allocator, &sections);
+    defer text_scan.deinit();
+
+    var owned_names: std.ArrayList([]const u8) = .empty;
+    defer owned_names.deinit(testing.allocator);
+
+    try rewriteRelocations(
+        testing.allocator,
+        &file,
+        &sections,
+        &table,
+        &text_scan,
+        &owned_names,
+    );
+
+    const lddw = text_scan.instructions.items[0];
+    const imm = lddw.instruction.imm orelse return error.TestExpectedImm;
+    switch (imm) {
+        .left => |name| try testing.expect(std.mem.startsWith(u8, name, "msg")),
+        .right => return error.TestExpectedLeftVariant,
+    }
+}
+
 test "decodeTextSections: empty text section yields empty result" {
     // Minimal ELF with no sections — no text, no instructions.
     var out: [@sizeOf(std.elf.Elf64_Ehdr)]u8 = @splat(0);
@@ -1869,4 +1934,34 @@ test "decodeTextSections: empty text section yields empty result" {
     defer text_scan.deinit();
 
     try testing.expectEqual(@as(usize, 0), text_scan.instructions.items.len);
+}
+
+test "decodeTextSections: truncated lddw tail is misaligned" {
+    var scan: SectionScan = .{
+        .allocator = testing.allocator,
+        .ro_sections = .empty,
+        .text_bases = .empty,
+        .total_text_size = 8,
+    };
+    defer scan.deinit();
+
+    var fake_hdr: std.elf.Elf64_Shdr = undefined;
+    @memset(std.mem.asBytes(&fake_hdr), 0);
+    fake_hdr.sh_size = 8;
+
+    const truncated_lddw = [_]u8{ 0x18, 0, 0, 0, 0, 0, 0, 0 };
+    try scan.text_bases.append(testing.allocator, .{
+        .section = .{
+            .index = 1,
+            .header = fake_hdr,
+            .name = ".text",
+            .data = &truncated_lddw,
+        },
+        .base_offset = 0,
+    });
+
+    try testing.expectError(
+        DecodeTextError.TextSectionMisaligned,
+        decodeTextSections(testing.allocator, &scan),
+    );
 }

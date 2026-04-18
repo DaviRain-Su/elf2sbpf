@@ -44,6 +44,10 @@ pub const Label = ast_node.Label;
 pub const ROData = ast_node.ROData;
 pub const GlobalDecl = ast_node.GlobalDecl;
 
+const ast_mod = @import("ast/ast.zig");
+pub const AST = ast_mod.AST;
+pub const SbpfArch = ast_mod.SbpfArch;
+
 // Make sub-module tests runnable via `zig build test`.
 test {
     _ = @import("common/number.zig");
@@ -58,6 +62,7 @@ test {
     _ = @import("elf/reloc.zig");
     _ = @import("parse/byteparser.zig");
     _ = @import("ast/node.zig");
+    _ = @import("ast/ast.zig");
     _ = @import("integration_test.zig");
 }
 
