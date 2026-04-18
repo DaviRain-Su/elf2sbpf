@@ -222,6 +222,77 @@ V3 产物普遍比 V0 小 —— 少了 dynamic/dynsym/dynstr/rel.dyn 四个 sec
 
 ---
 
+## D.7 — 字节码层优化路线图（未排期）
+
+**背景**：sbpf-linker 在 **IR 层**做优化（依赖 libLLVM；掌握 SSA /
+CFG / 类型 / alias 信息）。我们在 **字节码层**做优化（看得见最终
+编码 / section 布局 / relocation 表）。两个层次不是替代关系，是
+**叠加关系**：
+  - LLVM 吃 ~95% 的传统优化（inline、DCE、vectorize、LICM、SROA、
+    loop transform 等）—— 这些我们做不了（信息丢光）
+  - 字节码层吃剩下的 ~5%，但**LLVM 看不到**，所以是**独占价值**
+
+### 原则
+
+1. **永远不链 libLLVM** —— 违反就倒退成 sbpf-linker
+2. **永远保字节对等或主动声明破坏** —— 任何 opt 要加对应 golden +
+   文档；默认关，`-Doptimize=Release*` 或 `--optimize` flag 才开
+3. **保 V0/V3 byte-diff oracle** —— shim 做不到的优化不能 unconditionally
+   启用（会破坏对拍）；应作为 opt-in 路径
+
+### 候选子任务（按价值/成本粗排；无任何一个已开工）
+
+| ID | 子任务 | 层级 | 预估收益 | 实现复杂度 | 备注 |
+|----|--------|------|----------|-----------|------|
+| **D.7.1** | Rodata 字符串去重 | emit | DeFi 类程序 ~5-15% 体积 | 低 | 同 bytes 的 ROData 节点合并到一个 entry；`.rodata` symbols 指向同 offset |
+| **D.7.2** | Rodata section 合并 | emit | 2-5% 体积 | 低 | 多个 `.rodata.cst*` / `.rodata.str*` 合成一个 PROGBITS |
+| **D.7.3** | Dead function elimination | AST | 取决于程序（2-20%）| 中 | 从 entrypoint 做可达性分析；未引用的 `.text` label 整块剥离 |
+| **D.7.4** | Peephole（final encoding）| emit | 1-5% CU | 中 | `mov r0, r0` 消除、相邻 `lddw` 合并（如果 imm 可合）、冗余 `ja +0` 剥离 |
+| **D.7.5** | Dynsym / dynstr 去重 | emit | 0-1% 体积 | 低 | 相同 name 的 dynsym 只保留一条；dynstr 字符串池紧凑化 |
+| **D.7.6** | ELF padding 压缩 | emit | 0.5-2% 体积 | 低 | Section 之间的 align 空洞：能缩多少缩多少（不破坏 sh_addralign） |
+| **D.7.7** | Syscall 批量优化 | AST | log 密集 5-10% CU | 高 | 相邻 `sol_log_` 合并成一次；相邻 `sol_log_64_` 参数打包 |
+| **D.7.8** | Section 布局优化（hot-first）| emit | 微小（VM cache 局部性）| 低 | entry 附近的 `.text` 靠前；冷路径靠后 |
+| **D.7.9** | `.text` jump relaxation | emit | 0-1% 体积 | 高 | 长跳转（`call`）如果目标在短范围内换成短形式；跟当前 SBPF encoding 是否允许相关 |
+
+### 先做哪个？
+
+**强烈推荐从 D.7.1 + D.7.3 开始**：
+- D.7.1（rodata 字符串去重）：**绝对收益大 + 实现简单**。DeFi 程序
+  重复的错误字符串 / 日志前缀很多；合并后可能一下省 10%+ 体积
+- D.7.3（DCE）：**收益取决于程序但理论上限高**。Zig / Rust `no_std`
+  用户常引入大量标准库辅助函数，只有一部分被 entrypoint 用到
+
+两者都可以在 emit 层接前加一个 "optimizer pass" 阶段；中间态仍然
+是 `ParseResult` / `Program`，不破坏架构。
+
+### 先不做（明确）
+
+- **D.7.7 syscall 合并**：需要语义分析（判断 syscall 参数是否独立），
+  复杂度接近做一个小编译器后端。如果 Blueshift 的 JIT intrinsic 路径
+  能替代（让 `sol_log_batch_` 变成 intrinsic），我们就不做
+- **D.7.9 jump relaxation**：要先搞清 SBPF 对 `call` 短编码的支持
+  情况；风险/收益比差
+
+### 测量方法
+
+所有优化项提 PR 前要有：
+1. 对 9 个 zignocchio example `.so` 的 before/after 体积差
+2. 对 litesvm 或 test validator 的 CU 消耗对比（如果 opt 相关）
+3. byte-diff against oracle（如果不是 opt-in，必须 byte-identical）
+4. fuzz-lite 100 轮跑绿
+
+### 启动条件
+
+**不急**。当前 v0.5.0 的产物跟 sbpf-linker/shim 字节一致，已经是
+"性能 on par with Rust 管道"的基线。D.7 是"进一步 squeeze"，等
+任意一个触发条件：
+
+- 用户报：Solana program deploy 费用高，希望小一点
+- 用户报：某合约 CU 吃光，希望 linker 层帮一把
+- 有空做研究性 PR（不赶 release）
+
+---
+
 ## 进度汇总
 
 | 任务 | 状态 |
@@ -231,7 +302,8 @@ V3 产物普遍比 V0 小 —— 少了 dynamic/dynsym/dynstr/rel.dyn 四个 sec
 | D.3 Dynamic syscall | ✅ 完成，v0.4.0 已发 |
 | D.4 Zig 库 API | ✅ 完成，v0.3.0 已发 |
 | D.5 Windows | 未开始（等用户报需求） |
-| D.6 跨语言 | 战略愿景，不排期 |
+| D.6 跨语言前端 | 战略愿景，不排期 |
+| **D.7 字节码层优化** | **路线图就位，未排期** |
 
 ---
 
