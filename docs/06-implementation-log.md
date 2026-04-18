@@ -2894,6 +2894,85 @@ gap-fill issue 推迟（可能 C3+ 再看；目前没阻塞任何事）。
 ADR-002 决定保留。剩 E.1/E.2/E.4。E.1/E.2（git tag + GitHub
 Release + 下载验证）仍需用户批准再执行——涉及 public release。
 
+---
+
+## C2-E.1 + E.2：v0.1.0 release ✅🎉
+
+**日期**：2026-04-18
+**Release 链接**：https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.1.0
+**commit**：待推送
+
+### 做了什么
+
+**E.1 release 准备**
+
+- `build.zig.zon` version 0.1.0-pre → 0.1.0
+- `CHANGELOG.md`：[0.1.0-pre] 改成 `[0.1.0] — 2026-04-18`，把 C2-A..D
+  的成果补进 "Added — C2 成果" 段；[Unreleased] 重置为 "视反馈而定"
+- Annotated git tag `v0.1.0`（tagger 信息 + 高亮 release 要点）
+- 跨平台二进制构建：
+  ```
+  zig build -Doptimize=ReleaseSafe                              → macOS arm64 (620 KB)
+  zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux-gnu    → Linux x86_64 (4.6 MB)
+  zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-linux-gnu   → Linux arm64 (4.4 MB)
+  ```
+- tar + SHA256SUMS：
+  ```
+  elf2sbpf-v0.1.0-aarch64-macos.tar.gz   264 KB
+  elf2sbpf-v0.1.0-x86_64-linux.tar.gz    1.3 MB
+  elf2sbpf-v0.1.0-aarch64-linux.tar.gz   1.2 MB
+  SHA256SUMS                              308 B
+  ```
+- Release notes（`/tmp/v0.1.0-release-notes.md`）：Headline + Highlights
+  + Install（源码 & 预编译）+ Verify（shasum）+ Use + 已知限制 +
+  Acknowledgments
+- `gh release create v0.1.0 --title ... --notes-file ... 4 files`
+
+**E.2 download-verify**
+
+- `gh release download v0.1.0` 拉下 3 artifact + SHA256SUMS
+- `shasum -a 256 -c SHA256SUMS` → **3/3 OK**
+- 解包 aarch64-macos 二进制，对 9 个 committed golden `.o` 全部
+  跑通：**9/9 MATCH**
+
+### macOS arm64 体积 620 KB
+
+ReleaseSafe 保留 panic 检查；剥 debug 后 620 KB 属于正常。
+Debug build 是 ~1.8 MB，ReleaseFast 可以更小（但没 safety），
+v0.1 用 Safe 权衡 binary size 跟 production safety。
+
+### Linux 产物体积偏大（1.2-1.3 MB）
+
+Zig cross-compile 到 Linux 默认带 debug_info（`file` 输出显示 "with
+debug_info, not stripped"）。v0.2 考虑加 `-Dstrip=true` 降到 ~500 KB。
+这次先 ship 功能优先，体积优化留 backlog。
+
+### C2 进度更新
+
+- Epic A: 4/4 ✅
+- Epic B: 3/3 ✅
+- Epic C: 3/3 ✅（决策完成）
+- Epic D: 3/4（D.4 不做）
+- Epic E: 3/4（E.4 宣传可选）
+- **C2 总计 16/18（89%）**
+
+### v0.1.0 headline
+
+**Zig 0.16.0 一个工具装完，不用 Rust / cargo / libLLVM / 符号链接
+hack，就能把 Zig 写的 Solana 程序构建成 SBPF .so。** 9/9 zignocchio
+example 跟 reference-shim 字节对等，CI green，Draft PR 在上游，
+Release artifact 已发。
+
+### 下一任务
+
+**E.4 宣传（可选）**。用户决定是否做。可能的平台：
+- Zig Discord #showcase
+- Twitter/X（@davirian）
+- 中文技术社区（掘金 / V2EX）
+- Solana Stack Exchange 或 Reddit r/solana
+
+每个平台有不同受众，文案需调整。等用户决定优先级。
+
 
 
 
