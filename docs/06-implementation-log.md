@@ -1308,6 +1308,62 @@ rodata 只产一个 anchor=0 的 anon entry**，导致多字符串 rodata 的 ld
 起始为 0；遍历排序后的 pending_rodata，分配连续 offset；emit 成 `ASTNode::ROData`
 形式（节点类型先占位，Epic E 实现）。
 
+---
+
+## C1-D.5 — rodata_table 构建
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 做的事
+
+1. `RodataKey { section_index, address }` 查表 key
+2. `RodataTable` 结构：3 个并行 ArrayList（keys / offsets / names）+ total_size
+   - 不用 HashMap：N 通常很小（counter.o 最多 14 条），二分搜索 cache-friendly
+3. `buildRodataTable(syms)` 主入口
+   - 遍历 sorted pending_rodata，累加 rodata_offset
+   - 每 entry 对应 (key, offset, name) 三元组入表
+4. 查询 API：`find(key) → ?usize`（二分）/ `nameAt(idx)` / `offsetAt(idx)`
+
+### 设计：为什么 3 个并行 ArrayList 而非 struct of 3-fields?
+
+**Option A（我选的）**：`keys: ArrayList<Key>` / `offsets: ArrayList<u64>` / `names: ArrayList<[]const u8>` 三个独立 ArrayList
+
+**Option B**：`ArrayList(struct { key, offset, name })` 一个 ArrayList
+
+选 A 的原因：
+- 二分搜索只读 `keys.items`——更 cache 连续
+- `names` 单独持有，Epic E 构建 AST 时直接借切片；Epic F emit 时直接 slice 拷贝
+- SoA 比 AoS 对线性查询更友好
+
+这是 Zig 相对 Rust 的一个小优势——Rust 会 derive `PartialOrd` 让你一步到位，Zig 鼓励你想清楚 access pattern。
+
+### 验收
+
+- [x] 2 测试全绿
+- [x] `zig build test --summary all`：**100/100** 全绿（跨过一百！）
+- [x] hello.o 真数据产出 1 entry @ offset 0 size 23B
+- [x] 合成 3-split 数据验证 offset 累加：0/8/16
+
+### Epic D 进度
+
+- D.1 ✅ scanSections
+- D.2 ✅ scanSymbols
+- D.3 ✅ collectLddwTargets
+- D.4 ✅ gapFillRodata
+- D.5 ✅ buildRodataTable
+- D.6 decode text instructions（下一步）
+- D.7 relocation rewrite
+- D.8 debug section stash
+- D.9 AST.buildProgram wrapper
+
+### 下一任务
+
+**D.6** 解码每个 text section 的指令流，生成 Instruction 数组，每条带
+绝对 offset（section_base + 节内偏移）。用 D.1 的 text_bases + B.6 的
+`Instruction.fromBytes`——这两件事 Epic B/C 已经做过，D.6 只是调用。
+
+
 
 
 

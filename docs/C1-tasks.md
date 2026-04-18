@@ -284,10 +284,13 @@ test` 跑空测试。
   - 最后按 `(section_idx, address)` 全排序
   - **验收**：3 测试——hello.o 产 1 anon entry（23B "Hello from Zignocchio!"）；3 lddw 目标切 30B section 成 3 段；lddw 落命名 entry 内部返回错
 
-- [ ] **D.5**：合并并排序 `pending_rodata`，构建 `rodata_table`
-  - `HashMap<(SectionIndex, u64), String>`
-  - 设 `rodata_offset`，逐个 emit 成 `ASTNode::ROData`
-  - **验收**：rodata_table 的 key 集合跟 shim 一致
+- [x] **D.5**：构建 `rodata_table` + 分配连续 rodata_offset ✅ 2026-04-18
+  - `RodataKey { section_index, address }` + `RodataTable` 结构
+  - 3 个并行 ArrayList（keys / offsets / names），按 (section_idx, address) 二分搜索
+  - `buildRodataTable(syms)` 主入口：遍历 sorted pending_rodata，累加 offset
+  - `total_size` = 最终 rodata 合并镜像总字节数
+  - `find(key)`、`nameAt`、`offsetAt` 查询 API
+  - **验收**：2 测试——hello.o 1 entry @ offset 0 total 23B；3-split 合成数据 offset 0/8/16 total 30B
 
 - [ ] **D.6**：Text 指令解析
   - 对每个 text section 的 data，逐字节 decode 成 `Instruction`
@@ -550,13 +553,13 @@ Solana SBPF 特有结构。
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
-| D — Byteparser | 9 | 4 | 进行中 (44%) |
+| D — Byteparser | 9 | 5 | 进行中 (56%) |
 | E — AST | 4 | 0 | 未开始 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **20** | **36%** |
+| **总计** | **56** | **21** | **38%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

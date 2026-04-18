@@ -404,6 +404,9 @@ pub fn collectLddwTargets(
         const target_sec_idx_raw = rel_sec.header.sh_info;
         if (target_sec_idx_raw > std.math.maxInt(u16)) continue;
         const target_sec_idx: u16 = @intCast(target_sec_idx_raw);
+        const symtab_idx_raw = rel_sec.header.sh_link;
+        if (symtab_idx_raw > std.math.maxInt(u16)) continue;
+        const symtab_idx: u16 = @intCast(symtab_idx_raw);
 
         // Only consider relocations that operate on a text section.
         const text_sec = blk: {
@@ -416,11 +419,10 @@ pub fn collectLddwTargets(
         var rel_it = try file.iterRelocations(rel_sec);
         while (rel_it.next()) |r| {
             // Resolve the target symbol's section.
-            var sym_iter = file.iterSymbols(.symtab) catch continue;
+            var sym_iter = file.iterSymbolsAt(symtab_idx) catch continue;
             var target_sym: ?symbol_mod.Symbol = null;
-            var i: u32 = 0;
-            while (try sym_iter.next()) |s| : (i += 1) {
-                if (i == r.symbol_index) {
+            while (try sym_iter.next()) |s| {
+                if (s.index == r.symbol_index) {
                     target_sym = s;
                     break;
                 }
@@ -435,9 +437,15 @@ pub fn collectLddwTargets(
             if (off + 8 > text_sec.data.len) continue;
             if (text_sec.data[off] != 0x18) continue; // not lddw
 
-            // Addend = u32 from bytes 4..8 of the first slot (LE), as u64.
-            const addend = std.mem.readInt(u32, text_sec.data[off + 4 .. off + 8][0..4], .little);
-            try targets.insert(sym_sec, @as(u64, addend));
+            const addend: u64 = if (r.addend) |rela_addend| blk: {
+                if (rela_addend < 0) continue;
+                break :blk @intCast(rela_addend);
+            } else @as(u64, std.mem.readInt(
+                u32,
+                text_sec.data[off + 4 .. off + 8][0..4],
+                .little,
+            ));
+            try targets.insert(sym_sec, addend);
         }
     }
 
@@ -586,9 +594,319 @@ pub fn gapFillRodata(
     }.lt);
 }
 
+/// Key used to look up a rodata entry by its original ELF location.
+/// D.7 builds a lddw's `imm` label from this: given a relocation's
+/// target (section, addend), find the entry whose (section_index,
+/// address) matches and swap the imm for the entry's name.
+pub const RodataKey = struct {
+    section_index: u16,
+    address: u64,
+};
+
+/// A (section, address) → entry lookup table built from the
+/// final sorted pending_rodata list. Index into `entries_sorted`
+/// is the entry's stable position; `keys_sorted` and `offsets_sorted`
+/// are parallel arrays to avoid a hash map for small N.
+///
+/// Also carries each entry's assigned offset into the merged rodata
+/// image (starts at 0 for the first entry, accumulates sizes). This
+/// offset is what Program::from_parse_result consumes — it does NOT
+/// include the text-size / PHDR adjustment that buildProgram applies
+/// for V0 lddw resolution.
+pub const RodataTable = struct {
+    allocator: std.mem.Allocator,
+    /// Parallel arrays; `keys_sorted[i]` describes the entry emitted
+    /// at merged offset `offsets_sorted[i]` with name
+    /// `names_sorted[i]`. Sorted by `section_index` then `address`.
+    keys: std.ArrayList(RodataKey),
+    /// Byte offset into the merged rodata image.
+    offsets: std.ArrayList(u64),
+    /// Entry name, borrowed if it originated from a named symbol
+    /// (syms owns the backing storage), owned if it was synthesized
+    /// by gap-fill (SymbolScan.deinit frees them).
+    names: std.ArrayList([]const u8),
+    /// Total size in bytes of the merged rodata image (== sum of all
+    /// entry sizes == final rodata_offset after assignment).
+    total_size: u64,
+
+    pub fn deinit(self: *RodataTable) void {
+        self.keys.deinit(self.allocator);
+        self.offsets.deinit(self.allocator);
+        self.names.deinit(self.allocator);
+    }
+
+    /// Binary search for the (section_index, address) key. Returns the
+    /// index into parallel arrays, or null if not found.
+    pub fn find(self: *const RodataTable, key: RodataKey) ?usize {
+        var lo: usize = 0;
+        var hi: usize = self.keys.items.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            const k = self.keys.items[mid];
+            if (k.section_index < key.section_index or
+                (k.section_index == key.section_index and k.address < key.address))
+            {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if (lo < self.keys.items.len) {
+            const k = self.keys.items[lo];
+            if (k.section_index == key.section_index and k.address == key.address) {
+                return lo;
+            }
+        }
+        return null;
+    }
+
+    pub fn nameAt(self: *const RodataTable, idx: usize) []const u8 {
+        return self.names.items[idx];
+    }
+
+    pub fn offsetAt(self: *const RodataTable, idx: usize) u64 {
+        return self.offsets.items[idx];
+    }
+};
+
+/// Pass D.5: consume the final sorted `pending_rodata` (after D.2 + D.4)
+/// and produce a RodataTable with each entry's assigned merged offset +
+/// a binary-searchable key index.
+///
+/// Mirrors Rust byteparser.rs L170-186:
+///   let mut rodata_offset = 0u64;
+///   for entry in pending_rodata {
+///       ast.rodata_nodes.push(ASTNode::ROData { ... offset: rodata_offset });
+///       rodata_table.insert((Some(section_idx), address), name);
+///       rodata_offset += size;
+///   }
+pub fn buildRodataTable(
+    allocator: std.mem.Allocator,
+    syms: *const SymbolScan,
+) !RodataTable {
+    var keys: std.ArrayList(RodataKey) = .empty;
+    errdefer keys.deinit(allocator);
+    var offsets: std.ArrayList(u64) = .empty;
+    errdefer offsets.deinit(allocator);
+    var names: std.ArrayList([]const u8) = .empty;
+    errdefer names.deinit(allocator);
+
+    var rodata_offset: u64 = 0;
+    for (syms.pending_rodata.items) |e| {
+        try keys.append(allocator, .{ .section_index = e.section_index, .address = e.address });
+        try offsets.append(allocator, rodata_offset);
+        try names.append(allocator, e.name);
+        rodata_offset += e.size;
+    }
+
+    return RodataTable{
+        .allocator = allocator,
+        .keys = keys,
+        .offsets = offsets,
+        .names = names,
+        .total_size = rodata_offset,
+    };
+}
+
 // --- tests ---
 
 const testing = std.testing;
+
+fn makeMultiTextElf() [544]u8 {
+    var out: [544]u8 = @splat(0);
+
+    const shstrtab_off: usize = 479;
+    const shstrtab =
+        "\x00.text\x00.text.foo\x00.text.bar\x00.rodata\x00.shstrtab\x00";
+    @memcpy(out[shstrtab_off .. shstrtab_off + shstrtab.len], shstrtab);
+
+    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[std.elf.EI.CLASS] = std.elf.ELFCLASS64;
+    out[std.elf.EI.DATA] = std.elf.ELFDATA2LSB;
+    out[std.elf.EI.VERSION] = 1;
+    out[16] = 3; out[18] = 247; out[20] = 1;
+    std.mem.writeInt(u64, out[40..48], 64, .little);
+    out[52] = 64;
+    out[58] = 64;
+    out[60] = 6;
+    out[62] = 5;
+
+    std.mem.writeInt(u32, out[128..132], 1, .little);
+    std.mem.writeInt(u32, out[132..136], std.elf.SHT_PROGBITS, .little);
+    std.mem.writeInt(u64, out[136..144], 0x6, .little);
+    std.mem.writeInt(u64, out[152..160], 448, .little);
+    std.mem.writeInt(u64, out[160..168], 8, .little);
+
+    std.mem.writeInt(u32, out[192..196], 7, .little);
+    std.mem.writeInt(u32, out[196..200], std.elf.SHT_PROGBITS, .little);
+    std.mem.writeInt(u64, out[200..208], 0x6, .little);
+    std.mem.writeInt(u64, out[216..224], 456, .little);
+    std.mem.writeInt(u64, out[224..232], 16, .little);
+
+    std.mem.writeInt(u32, out[256..260], 17, .little);
+    std.mem.writeInt(u32, out[260..264], std.elf.SHT_PROGBITS, .little);
+    std.mem.writeInt(u64, out[264..272], 0x6, .little);
+    std.mem.writeInt(u64, out[280..288], 472, .little);
+    std.mem.writeInt(u64, out[288..296], 4, .little);
+
+    std.mem.writeInt(u32, out[320..324], 27, .little);
+    std.mem.writeInt(u32, out[324..328], std.elf.SHT_PROGBITS, .little);
+    std.mem.writeInt(u64, out[328..336], 0x2, .little);
+    std.mem.writeInt(u64, out[344..352], 476, .little);
+    std.mem.writeInt(u64, out[352..360], 3, .little);
+
+    std.mem.writeInt(u32, out[384..388], 35, .little);
+    std.mem.writeInt(u32, out[388..392], std.elf.SHT_STRTAB, .little);
+    std.mem.writeInt(u64, out[408..416], shstrtab_off, .little);
+    std.mem.writeInt(u64, out[416..424], shstrtab.len, .little);
+
+    return out;
+}
+
+fn makeRelDynsymElf() [704]u8 {
+    var out: [704]u8 = @splat(0);
+
+    const shstrtab_off: usize = 608;
+    const shstrtab =
+        "\x00.text\x00.rodata\x00.dynstr\x00.dynsym\x00.rel.text\x00.shstrtab\x00";
+    @memcpy(out[shstrtab_off .. shstrtab_off + shstrtab.len], shstrtab);
+
+    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[std.elf.EI.CLASS] = std.elf.ELFCLASS64;
+    out[std.elf.EI.DATA] = std.elf.ELFDATA2LSB;
+    out[std.elf.EI.VERSION] = 1;
+    out[16] = 3; out[18] = 247; out[20] = 1;
+    std.mem.writeInt(u64, out[40..48], 64, .little);
+    out[52] = 64;
+    out[58] = 64;
+    out[60] = 7;
+    out[62] = 6;
+
+    std.mem.writeInt(u32, out[128..132], 1, .little);
+    std.mem.writeInt(u32, out[132..136], std.elf.SHT_PROGBITS, .little);
+    std.mem.writeInt(u64, out[136..144], 0x6, .little);
+    std.mem.writeInt(u64, out[152..160], 512, .little);
+    std.mem.writeInt(u64, out[160..168], 8, .little);
+
+    std.mem.writeInt(u32, out[192..196], 7, .little);
+    std.mem.writeInt(u32, out[196..200], std.elf.SHT_PROGBITS, .little);
+    std.mem.writeInt(u64, out[200..208], 0x2, .little);
+    std.mem.writeInt(u64, out[216..224], 520, .little);
+    std.mem.writeInt(u64, out[224..232], 16, .little);
+
+    std.mem.writeInt(u32, out[256..260], 15, .little);
+    std.mem.writeInt(u32, out[260..264], std.elf.SHT_STRTAB, .little);
+    std.mem.writeInt(u64, out[280..288], 536, .little);
+    std.mem.writeInt(u64, out[288..296], 5, .little);
+
+    std.mem.writeInt(u32, out[320..324], 23, .little);
+    std.mem.writeInt(u32, out[324..328], std.elf.SHT_DYNSYM, .little);
+    std.mem.writeInt(u64, out[344..352], 544, .little);
+    std.mem.writeInt(u64, out[352..360], 48, .little);
+    std.mem.writeInt(u32, out[360..364], 3, .little);
+    std.mem.writeInt(u64, out[376..384], @sizeOf(std.elf.Elf64_Sym), .little);
+
+    std.mem.writeInt(u32, out[384..388], 31, .little);
+    std.mem.writeInt(u32, out[388..392], std.elf.SHT_REL, .little);
+    std.mem.writeInt(u64, out[408..416], 592, .little);
+    std.mem.writeInt(u64, out[416..424], @sizeOf(std.elf.Elf64_Rel), .little);
+    std.mem.writeInt(u32, out[424..428], 4, .little);
+    std.mem.writeInt(u32, out[428..432], 1, .little);
+    std.mem.writeInt(u64, out[440..448], @sizeOf(std.elf.Elf64_Rel), .little);
+
+    std.mem.writeInt(u32, out[448..452], 41, .little);
+    std.mem.writeInt(u32, out[452..456], std.elf.SHT_STRTAB, .little);
+    std.mem.writeInt(u64, out[472..480], shstrtab_off, .little);
+    std.mem.writeInt(u64, out[480..488], shstrtab.len, .little);
+
+    out[512] = 0x18;
+    std.mem.writeInt(u32, out[516..520], 3, .little);
+
+    @memcpy(out[536..541], "\x00msg\x00");
+
+    std.mem.writeInt(u32, out[568..572], 1, .little);
+    out[572] = 0x11;
+    std.mem.writeInt(u16, out[574..576], 2, .little);
+    std.mem.writeInt(u64, out[584..592], 16, .little);
+
+    std.mem.writeInt(u64, out[592..600], 0, .little);
+    std.mem.writeInt(u64, out[600..608], (@as(u64, 1) << 32) | 1, .little);
+
+    return out;
+}
+
+fn makeRelaLddwElf() [704]u8 {
+    var out: [704]u8 = @splat(0);
+
+    const shstrtab_off: usize = 616;
+    const shstrtab =
+        "\x00.text\x00.rodata\x00.strtab\x00.symtab\x00.rela.text\x00.shstrtab\x00";
+    @memcpy(out[shstrtab_off .. shstrtab_off + shstrtab.len], shstrtab);
+
+    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[std.elf.EI.CLASS] = std.elf.ELFCLASS64;
+    out[std.elf.EI.DATA] = std.elf.ELFDATA2LSB;
+    out[std.elf.EI.VERSION] = 1;
+    out[16] = 3; out[18] = 247; out[20] = 1;
+    std.mem.writeInt(u64, out[40..48], 64, .little);
+    out[52] = 64;
+    out[58] = 64;
+    out[60] = 7;
+    out[62] = 6;
+
+    std.mem.writeInt(u32, out[128..132], 1, .little);
+    std.mem.writeInt(u32, out[132..136], std.elf.SHT_PROGBITS, .little);
+    std.mem.writeInt(u64, out[136..144], 0x6, .little);
+    std.mem.writeInt(u64, out[152..160], 512, .little);
+    std.mem.writeInt(u64, out[160..168], 8, .little);
+
+    std.mem.writeInt(u32, out[192..196], 7, .little);
+    std.mem.writeInt(u32, out[196..200], std.elf.SHT_PROGBITS, .little);
+    std.mem.writeInt(u64, out[200..208], 0x2, .little);
+    std.mem.writeInt(u64, out[216..224], 520, .little);
+    std.mem.writeInt(u64, out[224..232], 16, .little);
+
+    std.mem.writeInt(u32, out[256..260], 15, .little);
+    std.mem.writeInt(u32, out[260..264], std.elf.SHT_STRTAB, .little);
+    std.mem.writeInt(u64, out[280..288], 536, .little);
+    std.mem.writeInt(u64, out[288..296], 5, .little);
+
+    std.mem.writeInt(u32, out[320..324], 23, .little);
+    std.mem.writeInt(u32, out[324..328], std.elf.SHT_SYMTAB, .little);
+    std.mem.writeInt(u64, out[344..352], 544, .little);
+    std.mem.writeInt(u64, out[352..360], 48, .little);
+    std.mem.writeInt(u32, out[360..364], 3, .little);
+    std.mem.writeInt(u64, out[376..384], @sizeOf(std.elf.Elf64_Sym), .little);
+
+    std.mem.writeInt(u32, out[384..388], 31, .little);
+    std.mem.writeInt(u32, out[388..392], std.elf.SHT_RELA, .little);
+    std.mem.writeInt(u64, out[408..416], 592, .little);
+    std.mem.writeInt(u64, out[416..424], @sizeOf(std.elf.Elf64_Rela), .little);
+    std.mem.writeInt(u32, out[424..428], 4, .little);
+    std.mem.writeInt(u32, out[428..432], 1, .little);
+    std.mem.writeInt(u64, out[440..448], @sizeOf(std.elf.Elf64_Rela), .little);
+
+    std.mem.writeInt(u32, out[448..452], 42, .little);
+    std.mem.writeInt(u32, out[452..456], std.elf.SHT_STRTAB, .little);
+    std.mem.writeInt(u64, out[472..480], shstrtab_off, .little);
+    std.mem.writeInt(u64, out[480..488], shstrtab.len, .little);
+
+    out[512] = 0x18;
+    std.mem.writeInt(u32, out[516..520], 4, .little);
+
+    @memcpy(out[536..541], "\x00msg\x00");
+
+    std.mem.writeInt(u32, out[568..572], 1, .little);
+    out[572] = 0x11;
+    std.mem.writeInt(u16, out[574..576], 2, .little);
+    std.mem.writeInt(u64, out[584..592], 16, .little);
+
+    std.mem.writeInt(u64, out[592..600], 0, .little);
+    std.mem.writeInt(u64, out[600..608], (@as(u64, 1) << 32) | 1, .little);
+    std.mem.writeInt(i64, out[608..616], 9, .little);
+
+    return out;
+}
 
 test "isRoSectionName recognizes rodata variants" {
     try testing.expect(isRoSectionName(".rodata"));
@@ -840,6 +1158,92 @@ test "gapFillRodata: anchor subdivision with multiple lddw targets" {
     try testing.expectEqual(@as(u64, 8), syms.pending_rodata.items[1].size);
     try testing.expectEqual(@as(u64, 16), syms.pending_rodata.items[2].address);
     try testing.expectEqual(@as(u64, 14), syms.pending_rodata.items[2].size);
+}
+
+test "buildRodataTable: hello.o produces 1 entry at offset 0" {
+    const hello_bytes = @embedFile("../testdata/hello.o");
+    const file = try elf_mod.ElfFile.parse(hello_bytes);
+
+    var sections = try scanSections(testing.allocator, &file);
+    defer sections.deinit();
+    var syms = try scanSymbols(testing.allocator, &file, &sections);
+    defer syms.deinit();
+    var targets = try collectLddwTargets(testing.allocator, &file, &sections);
+    defer targets.deinit();
+    try gapFillRodata(testing.allocator, &sections, &targets, &syms);
+
+    var table = try buildRodataTable(testing.allocator, &syms);
+    defer table.deinit();
+
+    try testing.expectEqual(@as(usize, 1), table.keys.items.len);
+    try testing.expectEqual(@as(u64, 0), table.offsets.items[0]);
+    try testing.expectEqual(@as(u64, 23), table.total_size);
+
+    const ro_idx = sections.ro_sections.items[0].section.index;
+    const slot = table.find(.{ .section_index = ro_idx, .address = 0 }).?;
+    try testing.expectEqual(@as(usize, 0), slot);
+    try testing.expect(std.mem.startsWith(u8, table.nameAt(slot), ".rodata.__anon_"));
+}
+
+test "buildRodataTable: 3 split entries get offsets 0/8/16" {
+    // Reuse D.4's 3-entry scenario to validate offset accumulation.
+    const fake_data = "Hello world! zignocchio rodata"; // 30 bytes
+
+    var scan: SectionScan = .{
+        .allocator = testing.allocator,
+        .ro_sections = .empty,
+        .text_bases = .empty,
+        .total_text_size = 0,
+    };
+    defer scan.deinit();
+
+    var fake_hdr: std.elf.Elf64_Shdr = undefined;
+    @memset(std.mem.asBytes(&fake_hdr), 0);
+    fake_hdr.sh_size = 30;
+    try scan.ro_sections.append(testing.allocator, .{
+        .section = .{
+            .index = 5,
+            .header = fake_hdr,
+            .name = ".rodata",
+            .data = fake_data,
+        },
+    });
+
+    var targets = LddwTargets.init(testing.allocator);
+    defer targets.deinit();
+    try targets.insert(5, 0);
+    try targets.insert(5, 8);
+    try targets.insert(5, 16);
+
+    var syms: SymbolScan = .{
+        .allocator = testing.allocator,
+        .pending_rodata = .empty,
+        .text_labels = .empty,
+        .entry_label = null,
+    };
+    defer syms.deinit();
+
+    try gapFillRodata(testing.allocator, &scan, &targets, &syms);
+    try testing.expectEqual(@as(usize, 3), syms.pending_rodata.items.len);
+
+    var table = try buildRodataTable(testing.allocator, &syms);
+    defer table.deinit();
+
+    try testing.expectEqual(@as(usize, 3), table.keys.items.len);
+    // Offsets are cumulative: 0, then 0+8=8, then 8+8=16.
+    try testing.expectEqual(@as(u64, 0), table.offsetAt(0));
+    try testing.expectEqual(@as(u64, 8), table.offsetAt(1));
+    try testing.expectEqual(@as(u64, 16), table.offsetAt(2));
+    try testing.expectEqual(@as(u64, 30), table.total_size);
+
+    // find() returns the right slot for each addend.
+    try testing.expectEqual(@as(?usize, 0), table.find(.{ .section_index = 5, .address = 0 }));
+    try testing.expectEqual(@as(?usize, 1), table.find(.{ .section_index = 5, .address = 8 }));
+    try testing.expectEqual(@as(?usize, 2), table.find(.{ .section_index = 5, .address = 16 }));
+
+    // Non-existent key returns null.
+    try testing.expectEqual(@as(?usize, null), table.find(.{ .section_index = 5, .address = 4 }));
+    try testing.expectEqual(@as(?usize, null), table.find(.{ .section_index = 99, .address = 0 }));
 }
 
 test "gapFillRodata: rejects lddw target inside a named entry" {
