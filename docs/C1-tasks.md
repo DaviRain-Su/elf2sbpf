@@ -485,8 +485,14 @@ Solana SBPF 特有结构。
 
 ### 任务
 
-- [ ] **G.1**：`emit/program.zig` — `Program` 结构
-  - `struct { elf_header, program_headers, sections }`
+- [x] **G.1**：`emit/program.zig` — `Program` 结构 ✅ 2026-04-18
+  - `Program { elf_header, program_headers: ArrayList(ProgramHeader),
+    sections: ArrayList(SectionType), section_names: ArrayList([]const u8) }`
+  - `init() / deinit() / appendSection / appendProgramHeader /
+    sectionCount / programHeaderCount / hasRodata / reserveSectionNames`
+  - lib.zig 补齐对 emit 层 7 个 section 类型 + `Program` 的
+    re-exports
+  - **验收**：4 新单测（空 Program、append section/header、hasRodata 检测）
 
 - [ ] **G.2**：`emit/program.zig` — `fromParseResult(pr: ParseResult, arch: V0)`
   - 从 ParseResult 构建 sections 列表
@@ -590,10 +596,10 @@ Solana SBPF 特有结构。
 | D — Byteparser | 9 | 9 | ✅ 完成 |
 | E — AST | 4 | 4 | ✅ 完成 |
 | F — ELF 输出层 | 12 | 12 | ✅ 完成 |
-| G — Program emit | 4 | 0 | 未开始 |
+| G — Program emit | 4 | 1 | 进行中 (25%) |
 | H — CLI | 3 | 2 | 进行中（入口/错误处理已完成；主流程验收待 Epic G） |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **43** | **77%** |
+| **总计** | **56** | **44** | **79%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

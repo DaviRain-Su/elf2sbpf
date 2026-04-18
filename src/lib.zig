@@ -59,6 +59,16 @@ pub const NullSection = emit_section_types.NullSection;
 pub const ShStrTabSection = emit_section_types.ShStrTabSection;
 pub const CodeSection = emit_section_types.CodeSection;
 pub const DataSection = emit_section_types.DataSection;
+pub const DynSymSection = emit_section_types.DynSymSection;
+pub const DynSymEntry = emit_section_types.DynSymEntry;
+pub const DynStrSection = emit_section_types.DynStrSection;
+pub const DynamicSection = emit_section_types.DynamicSection;
+pub const RelDynSection = emit_section_types.RelDynSection;
+pub const RelDynEntry = emit_section_types.RelDynEntry;
+pub const DebugSection = emit_section_types.DebugSection;
+pub const SectionType = emit_section_types.SectionType;
+
+pub const Program = @import("emit/program.zig").Program;
 
 // Make sub-module tests runnable via `zig build test`.
 test {
@@ -77,6 +87,7 @@ test {
     _ = @import("ast/ast.zig");
     _ = @import("emit/header.zig");
     _ = @import("emit/section_types.zig");
+    _ = @import("emit/program.zig");
     _ = @import("integration_test.zig");
 }
 
