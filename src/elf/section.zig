@@ -11,8 +11,10 @@
 const std = @import("std");
 const elf = std.elf;
 const ElfFile = @import("reader.zig").ElfFile;
+const util = @import("../common/util.zig");
 
 pub const SectionError = error{
+    IndexOutOfRange,     // section index >= sh_count
     NameOutOfRange,      // sh_name points outside shstrtab
     DataOutOfRange,      // sh_offset + sh_size > bytes.len (for PROGBITS-style)
 };
@@ -68,13 +70,13 @@ pub const SectionIter = struct {
 /// Resolve a single section by index. Used by both the iterator and
 /// direct `sectionByIndex` lookups.
 pub fn buildSection(file: *const ElfFile, idx: u16) SectionError!Section {
-    std.debug.assert(idx < file.sh_count);
-    const hdr = file.sectionHeaderAt(idx);
+    if (idx >= file.sh_count) return SectionError.IndexOutOfRange;
+    const hdr = file.sectionHeaderAt(idx) catch return SectionError.IndexOutOfRange;
 
     // Name resolution via shstrtab. sh_name is a byte offset.
     const name_off: usize = @intCast(hdr.sh_name);
     if (name_off > file.shstrtab.len) return SectionError.NameOutOfRange;
-    const name = cstrAt(file.shstrtab, name_off);
+    const name = util.cstrAt(file.shstrtab, name_off);
 
     // Data slicing. SHT_NULL has sh_offset=0 and sh_size=0, giving an empty slice.
     // SHT_NOBITS has sh_size>0 but no file bytes — still return empty slice.
@@ -96,40 +98,9 @@ pub fn buildSection(file: *const ElfFile, idx: u16) SectionError!Section {
     };
 }
 
-/// Read a null-terminated string starting at `offset` within `buf`.
-/// If `offset` reaches the end of the buffer without a terminator, returns
-/// the remainder of the buffer (defensive — ELF strtabs should always end
-/// in a 0 byte, but we don't crash if not).
-fn cstrAt(buf: []const u8, offset: usize) []const u8 {
-    if (offset >= buf.len) return "";
-    var end = offset;
-    while (end < buf.len and buf[end] != 0) : (end += 1) {}
-    return buf[offset..end];
-}
-
 // --- tests ---
 
 const testing = std.testing;
-
-test "cstrAt reads C strings correctly" {
-    // "\0.text\0.rodata\0"
-    const buf = "\x00.text\x00.rodata\x00";
-    try testing.expectEqualStrings("", cstrAt(buf, 0));
-    try testing.expectEqualStrings(".text", cstrAt(buf, 1));
-    try testing.expectEqualStrings(".rodata", cstrAt(buf, 7));
-}
-
-test "cstrAt handles out-of-range offset" {
-    const buf = "hello";
-    try testing.expectEqualStrings("", cstrAt(buf, 100));
-}
-
-test "cstrAt handles missing terminator" {
-    // No trailing zero — should return the rest of the buffer instead of
-    // crashing.
-    const buf = "nonul";
-    try testing.expectEqualStrings("nonul", cstrAt(buf, 0));
-}
 
 // Build a minimal ELF with exactly one non-NULL section ".text" containing
 // 3 bytes of data, plus the mandatory NULL section and the shstrtab.

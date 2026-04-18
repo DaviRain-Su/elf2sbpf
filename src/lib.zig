@@ -36,6 +36,8 @@ const reloc_mod = @import("elf/reloc.zig");
 pub const Reloc = reloc_mod.Reloc;
 pub const RelocType = reloc_mod.RelocType;
 
+pub const byteparser = @import("parse/byteparser.zig");
+
 // Make sub-module tests runnable via `zig build test`.
 test {
     _ = @import("common/number.zig");
@@ -43,10 +45,12 @@ test {
     _ = @import("common/opcode.zig");
     _ = @import("common/instruction.zig");
     _ = @import("common/syscalls.zig");
+    _ = @import("common/util.zig");
     _ = @import("elf/reader.zig");
     _ = @import("elf/section.zig");
     _ = @import("elf/symbol.zig");
     _ = @import("elf/reloc.zig");
+    _ = @import("parse/byteparser.zig");
     _ = @import("integration_test.zig");
 }
 

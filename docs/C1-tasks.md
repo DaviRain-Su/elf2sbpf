@@ -245,12 +245,15 @@ test` 跑空测试。
 
 ### 任务
 
-- [ ] **D.1**：识别 `ro_sections` 和 `text_section_bases`
-  - 扫 section，过滤以 `.rodata` 或 `.data.rel.ro` 开头的
-  - 扫 section，过滤以 `.text` 开头的，计算每个 section 在合并后
-    的 base offset
-  - **验收**：对 hello.o 能正确识别 1 个 rodata、1 个 text
-    section
+- [x] **D.1**：识别 `ro_sections` 和 `text_section_bases` ✅ 2026-04-18
+  - `scanSections(allocator, file) → SectionScan`
+  - `SectionScan { ro_sections, text_bases, total_text_size }` + lookup 方法
+  - `isRoSectionName` / `isTextSectionName` helpers
+  - 对 hello.o 正确识别 1 个 .text（64B）+ 1 个 .rodata
+  - **模块重构**：`cstrAt` 移到 `src/common/util.zig` 作为共享 helper（user/linter 加的）
+  - **API 变更**：`ElfFile.sectionHeaderAt` 从 assert 改成 error-return（`IndexOutOfRange`）——更健壮，但要求 section.zig / symbol.zig 用 `catch` 处理
+  - **Zig 0.16 ArrayList**：`.empty` + 每次 `.append(allocator, ...)` 传 allocator
+  - **验收**：4 个单测全绿（2 个 name predicate + hello.o 分类 + index lookup）
 
 - [ ] **D.2**：扫符号，收集 `pending_rodata`
   - 对每个符号，若它属于 rodata section 且不是 `STT_SECTION` 且
@@ -548,13 +551,13 @@ Solana SBPF 特有结构。
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
-| D — Byteparser | 9 | 0 | 未开始 |
+| D — Byteparser | 9 | 1 | 进行中 (11%) |
 | E — AST | 4 | 0 | 未开始 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **16** | **29%** |
+| **总计** | **56** | **17** | **30%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

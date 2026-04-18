@@ -19,6 +19,7 @@
 const std = @import("std");
 const elf = std.elf;
 const ElfFile = @import("reader.zig").ElfFile;
+const util = @import("../common/util.zig");
 
 pub const SymbolError = error{
     /// No SHT_SYMTAB section found (or SHT_DYNSYM for the dynamic flavor).
@@ -134,7 +135,7 @@ pub const SymbolIter = struct {
 
         const name_off: usize = @intCast(sym.st_name);
         if (name_off >= self.strtab.len) return SymbolError.NameOutOfRange;
-        const name = cstrAt(self.strtab, name_off);
+        const name = util.cstrAt(self.strtab, name_off);
 
         return Symbol{
             .index = idx,
@@ -158,7 +159,7 @@ pub fn makeIter(file: *const ElfFile, kind: SymTableKind) SymbolError!SymbolIter
     // Scan section headers for the symbol table.
     var i: u16 = 0;
     while (i < file.sh_count) : (i += 1) {
-        const sh = file.sectionHeaderAt(i);
+        const sh = file.sectionHeaderAt(i) catch continue;
         if (sh.sh_type != want_type) continue;
 
         // Validate entry size and table bounds.
@@ -176,7 +177,7 @@ pub fn makeIter(file: *const ElfFile, kind: SymTableKind) SymbolError!SymbolIter
         if (link_raw > std.math.maxInt(u16)) return SymbolError.BadStringTable;
         const link_idx: u16 = @intCast(link_raw);
         if (link_idx >= file.sh_count) return SymbolError.BadStringTable;
-        const strtab_hdr = file.sectionHeaderAt(link_idx);
+        const strtab_hdr = file.sectionHeaderAt(link_idx) catch return SymbolError.BadStringTable;
         if (strtab_hdr.sh_type != elf.SHT_STRTAB) return SymbolError.BadStringTable;
         const strtab_off: usize = @intCast(strtab_hdr.sh_offset);
         const strtab_sz: usize = @intCast(strtab_hdr.sh_size);
@@ -192,13 +193,6 @@ pub fn makeIter(file: *const ElfFile, kind: SymTableKind) SymbolError!SymbolIter
     }
 
     return SymbolError.NoSymbolTable;
-}
-
-fn cstrAt(buf: []const u8, offset: usize) []const u8 {
-    if (offset >= buf.len) return "";
-    var end = offset;
-    while (end < buf.len and buf[end] != 0) : (end += 1) {}
-    return buf[offset..end];
 }
 
 // --- tests ---

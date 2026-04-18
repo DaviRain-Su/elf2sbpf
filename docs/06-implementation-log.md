@@ -1066,6 +1066,60 @@ port 成 Zig。D.1-D.9 共 9 个任务。
 
 从 D.1 起手：识别 `ro_sections` 和 `text_section_bases`。
 
+---
+
+## C1-D.1 — Byteparser section scan
+
+**日期**：2026-04-18
+**状态**：✅ 完成（Epic D 起手）
+
+### 做的事
+
+1. 新建 `src/parse/byteparser.zig`（现 ~200 行，会随 D.2-D.9 增长到 ~500 行）
+2. **SectionScan** 结构：owner-managed `ArrayList` 存 ro_sections + text_bases
+3. `scanSections(allocator, file)` 主入口
+4. `isRoSectionName` / `isTextSectionName` 公共 predicate（spec §6.2 引用）
+5. `roSectionByIndex()` / `textBaseByIndex()` 线性查表
+
+### 与 C.2/C.3 的 API 变更（由 linter 触发的改进）
+
+在 D.1 过程中，代码审查 / linter 推了三处改进：
+
+1. **`cstrAt` 提取到 `common/util.zig`**（去重：section.zig 和 symbol.zig 都用）
+2. **`ElfFile.sectionHeaderAt` 改成 error-return**（原来是 assert）——更防御式，要求 caller 用 `catch`
+3. **`ParseError` 加 `IndexOutOfRange`**
+
+这些变更让 section/symbol/byteparser 层的错误传播更统一。**验收**：84 → 91 测试都过。
+
+### Zig 0.16 ArrayList API 教训
+
+我第一次写了 `std.ArrayList(T) = .{}`，编译失败说"missing field items/capacity"。
+Linter 改成 `.init(allocator)`，编译失败说"no member named 'init'"。
+最终正确：
+
+```zig
+var list: std.ArrayList(T) = .empty;          // 构造
+errdefer list.deinit(allocator);              // cleanup，per-call 传 allocator
+try list.append(allocator, item);             // append，per-call 传 allocator
+```
+
+**Zig 0.16 不再保存 allocator 在 ArrayList 里** —— 调用方每次操作都要传。
+这跟 0.15 的 `.init(allocator)` / `.deinit()` API 不兼容。以后 C 开头的 Epic 全部用这种模式。
+
+### 验收
+
+- [x] 4 个单测全绿（2 个 name predicate + hello.o 分类 + index lookup）
+- [x] `zig build test --summary all`：**91/91** 全绿（累计）
+- [x] hello.o 正确识别 1 text + 1 rodata，total_text_size = 64
+
+### 下一任务
+
+**D.2** 扫 symtab，收集 `pending_rodata` —— 把命名符号（不是 STT_SECTION）
+归类到它们所在的 rodata section，记下 address/size/name/bytes。这对 hello.o
+没实质效果（字符串常量都是匿名）但对 counter/vault 这些多命名 rodata 的
+example 关键。
+
+
 
 
 

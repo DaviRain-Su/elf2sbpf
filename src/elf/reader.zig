@@ -32,6 +32,8 @@ pub const ParseError = error{
     CorruptSectionTable,
     /// e_shstrndx out of range or points at a non-STRTAB section.
     BadShStrIndex,
+    /// Section index out of range.
+    IndexOutOfRange,
 };
 
 pub const ElfFile = struct {
@@ -121,9 +123,9 @@ pub const ElfFile = struct {
         return self.sh_count;
     }
 
-    /// Copy a section header by index. Asserts idx is in range.
-    pub fn sectionHeaderAt(self: *const ElfFile, idx: u16) elf.Elf64_Shdr {
-        std.debug.assert(idx < self.sh_count);
+    /// Copy a section header by index. Returns error if idx is out of range.
+    pub fn sectionHeaderAt(self: *const ElfFile, idx: u16) ParseError!elf.Elf64_Shdr {
+        if (idx >= self.sh_count) return ParseError.IndexOutOfRange;
         const off = self.sh_offset + @as(usize, idx) * @sizeOf(elf.Elf64_Shdr);
         var shdr: elf.Elf64_Shdr = undefined;
         @memcpy(
@@ -140,7 +142,6 @@ pub const ElfFile = struct {
 
     /// Direct lookup by section index.
     pub fn sectionByIndex(self: *const ElfFile, idx: u16) section_mod.SectionError!section_mod.Section {
-        std.debug.assert(idx < self.sh_count);
         return section_mod.buildSection(self, idx);
     }
 
@@ -178,11 +179,11 @@ fn makeMinimalHeader() [@sizeOf(elf.Elf64_Ehdr)]u8 {
     out[elf.EI.CLASS] = elf.ELFCLASS64;
     out[elf.EI.DATA] = elf.ELFDATA2LSB;
     out[elf.EI.VERSION] = 1;
-    out[16] = 3;             // e_type = ET_DYN
-    out[18] = 247;           // e_machine = EM_BPF
-    out[20] = 1;             // e_version = 1
-    out[52] = 64;            // e_ehsize
-    out[58] = 64;            // e_shentsize
+    out[16] = 3; // e_type = ET_DYN
+    out[18] = 247; // e_machine = EM_BPF
+    out[20] = 1; // e_version = 1
+    out[52] = 64; // e_ehsize
+    out[58] = 64; // e_shentsize
     return out;
 }
 
