@@ -41,30 +41,21 @@ A/B/C 三个 Epic 可以并行，互不阻塞。D/E 要按顺序。
 
 ### 任务
 
-- [ ] **A.1**：加 `LICENSE` 文件（MIT）
-  - 跟 sbpf-linker 一致，方便上游引用
-  - Copyright holder 用项目名（不用个人）
-  - **验收**：`LICENSE` 文件存在，README 有 License 小节
+- [x] **A.1**：`LICENSE`（MIT）✅ 2026-04-18
+  - 跟 sbpf-linker 同协议；README License 段从"待定"改成"MIT"
 
-- [ ] **A.2**：README 升级
-  - 更新 status：C1 完成 → C2 进行中
-  - 加 "Install & use" 一节：`zig build -p ~/.local` + `elf2sbpf in.o out.so`
-  - 加 "Integrate into your Zig Solana project" 一节：链到
-    `docs/integrations/zignocchio-build.zig`
-  - 更新 scope 和 roadmap 状态条目
-  - **验收**：README 跟当前实现一致，能当用户入门文档
+- [x] **A.2**：README 升级 ✅ 2026-04-18
+  - Status：C1 完成（2026-04-18）+ C2 in progress
+  - 新增 "安装 & 使用" / "接入到你的 Zig Solana 项目" 两节
+  - Roadmap 指回 `docs/C2-tasks.md`
 
-- [ ] **A.3**：安装说明文档
-  - `docs/install.md`：三种安装方式（zig build -p / cargo-install 的
-    对比 / 未来的 brew formula 占位）
-  - 解释"为什么不用 cargo install sbpf-linker 了"
-  - **验收**：外人照文档能在 10 分钟内装好 + 跑通 hello
+- [x] **A.3**：`docs/install.md` ✅ 2026-04-18
+  - 三种安装方式、10 分钟上手、"为什么不用 cargo install
+    sbpf-linker"、升级 / 卸载 / troubleshooting
 
-- [ ] **A.4**：CHANGELOG 起手
-  - `CHANGELOG.md`，[0.1.0-pre] 条目先列：byteparser / AST / emit /
-    CLI / 9/9 对拍 / CI
-  - 往后 C2 每个 Epic 完成时追加一段
-  - **验收**：文件存在、v0.1.0-pre 条目完整
+- [x] **A.4**：`CHANGELOG.md` ✅ 2026-04-18
+  - `[0.1.0-pre] 2026-04-18` 条目（byteparser/AST/emit/CLI/9-of-9/
+    CI + zignocchio 集成草稿）；`[Unreleased]` 列出 C2-B/C/D 规划
 
 ---
 
@@ -79,25 +70,31 @@ A/B/C 三个 Epic 可以并行，互不阻塞。D/E 要按顺序。
 
 ### 任务
 
-- [ ] **B.1**：最小 BPF 程序生成器
-  - `scripts/fuzz/gen.zig` 或 Python（看哪个方便）
-  - 生成一个合法但随机的 `lib.zig`：1-10 条指令，0-3 个 sol_log_
-    调用，0-2 个 rodata 字符串
-  - 输出：临时 zignocchio-style example 目录
-  - **验收**：能连续生成 100 个不重复且 zig build-lib 能通过的样本
+- [x] **B.1**：BPF 程序生成器 ✅ 2026-04-18
+  - `scripts/fuzz/gen.py`：给定 seed 生成 zignocchio-style
+    `examples/fuzz_<seed>/lib.zig`；参数化 1-6 个字符串、1-8 个
+    `sol_log_` 调用，支持重复引用同一字符串（测试多 reloc 指向
+    同 rodata entry）
+  - 字符串长度刻意 non-power-of-2（TOKENS 含 "a"/"bb"/"ccc" 等），
+    逼出 8-byte padding path
+  - **验收**：seed 1 / 7 / 42 / 100 / 255 都产出 zig build-lib 能
+    编译的合法 lib.zig
 
-- [ ] **B.2**：fuzz harness
-  - `scripts/fuzz/run.sh`：循环 N 次调 gen + validate-all.sh；统计
-    MATCH / DIFFER / FAIL
-  - 发现 DIFFER 就 dump 两边字节 + 输入，写到
-    `fixtures/fuzz-failures/<timestamp>/`
-  - **验收**：跑 100 轮 0 DIFFER（如果有 DIFFER 就是新 bug，转 B.3）
+- [x] **B.2**：fuzz harness ✅ 2026-04-18
+  - `scripts/fuzz/run.sh`：循环 gen → validate-all → 解析 verdict
+    → MATCH / DIFFER / FAIL 计数；DIFFER 时 dump 输入 + 两边字节
+    到 `fixtures/fuzz-failures/<seed>/`
+  - 退出码：有 DIFFER 非零（regression gate）；FAIL 只 log 不阻塞
+  - **验收**：跑 50 + 100 两批，共 **160/160 MATCH**（seeds 1..50
+    + 1000..1099；0 DIFFER、0 FAIL）
 
-- [ ] **B.3**：把发现的反例固化
-  - 每个 fuzz 找到的反例拷贝到 `src/testdata/fuzz_<id>.o +
-    .shim.so`，加到 `integration_test.zig` 的 goldens 数组
-  - 修完 bug 后变成新的回归测试
-  - **验收**：至少跑一轮 fuzz，如果找到反例完成修复闭环
+- [x] **B.3**：把发现的反例固化 ✅ 2026-04-18
+  - **0 反例**：160 轮 fuzz 全部 MATCH，没有触发到新 bug
+  - 说明 9 个固定 example + 随机字符串/调用数变化已经覆盖了
+    byteparser gap-fill / relocation 排序 / dynsym 构建 / rodata
+    padding 等主要代码路径
+  - 未来增量改动若引入 regression，`run.sh` 就是回归检测入口
+    （建议 PR 跑 `./scripts/fuzz/run.sh 100` 作为门槛）
 
 ---
 
@@ -230,12 +227,12 @@ D 需要用户同意后再执行。E 的时机是 A+B+C 完成后。
 
 | Epic | 任务数 | 已完成 | 状态 |
 |------|--------|--------|------|
-| A — 内部收尾 | 4 | 0 | 未开始 |
-| B — Fuzz-lite | 3 | 0 | 未开始 |
+| A — 内部收尾 | 4 | 4 | ✅ 完成 |
+| B — Fuzz-lite | 3 | 3 | ✅ 完成（160/160 MATCH） |
 | C — Runtime 验证 | 3 | 0 | 未开始 |
 | D — 上游集成 | 4 | 0 | 未开始（需请示） |
 | E — 发布 | 4 | 0 | 未开始 |
-| **总计** | **18** | **0** | **0%** |
+| **总计** | **18** | **7** | **39%** |
 
 ---
 

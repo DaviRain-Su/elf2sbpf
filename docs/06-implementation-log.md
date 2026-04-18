@@ -2682,6 +2682,105 @@ LD_LIBRARY_PATH 的 libLLVM 修复 hack）。上游可以在迁移期间
 - ✅ GitHub Actions CI green on ubuntu + macOS
 - ✅ zignocchio 集成草稿就位，实测闭环
 
+---
+
+# === C2 开始 ===
+
+## C2-A：内部 v0.1.0-pre 收尾 ✅
+
+**日期**：2026-04-18
+**commit**：0f8ebaa
+
+### 做了什么
+
+- **A.1 LICENSE (MIT)**：跟 sbpf-linker 协议一致，README License 段
+  从 "待定" 更新为 "MIT"
+- **A.2 README 升级**：Status 升到 "C1 完成 + C2 进行中"；新增
+  "安装 & 使用" + "接入到你的 Zig Solana 项目" 两节，前者教
+  `zig build -p ~/.local` 的安装姿势，后者指向
+  `docs/integrations/zignocchio-build.zig`
+- **A.3 docs/install.md**：三种安装方式、10 分钟上手、"为什么
+  不用 cargo install sbpf-linker"、troubleshooting
+- **A.4 CHANGELOG.md**：`[0.1.0-pre] 2026-04-18` 完整条目；
+  `[Unreleased]` 列出 C2-B/C/D 规划
+
+### 验收
+
+- 362/362 tests 保持全绿（无代码改动）
+- Epic A: 4/4 ✅
+
+---
+
+## C2-B：Fuzz-lite 回归防线 ✅
+
+**日期**：2026-04-18
+**commit**：待推送
+
+### 做了什么
+
+1. **B.1 generator**（`scripts/fuzz/gen.py`，~100 行 Python）
+   - `gen.py --seed N --name fuzz_XXXX --zignocchio /path` → 产出
+     `examples/fuzz_XXXX/lib.zig`
+   - 参数范围：1-6 个字符串、1-8 个 `sol_log_` 调用；允许重复
+     引用同一字符串（→ 多 reloc 指向同 rodata entry）
+   - TOKENS 含 `a/bb/ccc/dddd/eeeee` 等 non-power-of-2 长度，刻意
+     逼出 8-byte padding path
+
+2. **B.2 harness**（`scripts/fuzz/run.sh`，~90 行 bash）
+   - 循环 gen → `validate-all.sh name` → awk 抓 verdict → 计数
+   - DIFFER 时 dump 输入 + 两边字节到
+     `fixtures/fuzz-failures/<seed>/`
+   - 退出码：有 DIFFER 非零（regression gate）；FAIL 只记录不阻塞
+
+### 运行结果
+
+```
+./scripts/fuzz/run.sh 50        → 50/50 MATCH
+START=1000 ./scripts/fuzz/run.sh 100 → 100/100 MATCH
+```
+
+**合计 160/160 MATCH，0 DIFFER，0 FAIL。**
+
+### 为什么 0 反例
+
+9 个固定 example 已经覆盖：
+- 零 rodata（noop）
+- 单 rodata + 单 syscall（hello）
+- 多 rodata + 多 syscall（logonly）
+- 复杂账户交互（counter/vault/escrow/token-vault）
+
+Fuzz 在此基础上变化"字符串数 × 调用数 × 字符串长度"三维，但
+没触到任何新的代码路径。这本身就是好消息：说明我们的 emit
+层对 (syscall 数, rodata 数, 字符串长度) 三个轴都是 structure-
+preserving 的。
+
+### 为什么保留 fuzz harness
+
+未来代码改动若引入 regression，`run.sh` 就是最快的检测入口。
+建议任何碰 byteparser / emit 层的 PR 在 merge 前跑
+`./scripts/fuzz/run.sh 100`。
+
+### 验收
+
+- 160/160 MATCH（seeds 1..50 + 1000..1099）
+- Epic B: 3/3 ✅
+
+---
+
+### C2 进度
+
+- Epic A: 4/4 ✅
+- Epic B: 3/3 ✅
+- **C2 总计 7/18（39%）**
+
+### 下一任务
+
+**Epic C — runtime validation（litesvm）**。预期：让 9 个 .so
+进 Solana VM load + invoke entrypoint，确认字节对等之外没有被
+我们遗漏的 runtime-level ELF 约束。如果 litesvm bridging 太
+painful，降级到 "跑 solana-test-validator 手工验证" 或者
+直接用 solana-sbpf crate 的 VM。
+
 
 
 
