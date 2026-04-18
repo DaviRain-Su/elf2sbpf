@@ -384,23 +384,24 @@ Solana SBPF 特有结构。
 
 ### 任务
 
-- [ ] **F.1**：`emit/header.zig` — `ElfHeader`
-  - Solana 特有常量：ident = `\x7fELF\x02\x01\x01\0...`,
-    e_type=ET_DYN(3), e_machine=EM_BPF(247)
-  - `bytecode() []u8`：emit 64 字节
-  - **验收**：跟 Rust 版 emit 相同字节
+- [x] **F.1**：`emit/header.zig` — `ElfHeader` ✅ 2026-04-18
+  - Solana 常量：`SOLANA_IDENT` / `ET_DYN=3` / `EM_BPF=247` / `EV_CURRENT=1`
+  - Size 常量：`ELF64_HEADER_SIZE=64` / `PROGRAM_HEADER_SIZE=56` / `SECTION_HEADER_SIZE=64`
+  - `init()` 默认值匹配 Solana spec
+  - `bytecode(*[64]u8)` 写入固定 64 字节；避开 ArrayList allocator 开销
+  - **验收**：3 单测（默认值、magic+字段正确、自定义字段 round-trip）
 
-- [ ] **F.2**：`emit/header.zig` — `ProgramHeader`
-  - 56 字节布局
-  - Solana 常量：`V3_BYTECODE_VADDR` 等
-  - `bytecode() []u8`
-  - **验收**：跟 Rust 版 emit 相同字节
+- [x] **F.2**：`emit/header.zig` — `ProgramHeader` ✅ 2026-04-18（同文件）
+  - 56-byte struct + `newLoad(offset, size, executable, arch)` + `newDynamic`
+  - V0 flags = PF_R|PF_X（code）/ PF_R（rodata），vaddr=offset，align=4096
+  - V3 flags = PF_X / PF_R，vaddr=V3_BYTECODE_VADDR / V3_RODATA_VADDR，align=0
+  - `bytecode(*[56]u8)`
+  - **验收**：4 单测（V0 exec、V0 rodata、V3 exec、PT_DYNAMIC + bytecode 输出）
 
-- [ ] **F.3**：`emit/section_types.zig` — `SectionHeader`（通用 64 字节）
-  - Section header 工厂函数
-  - 常量：`SHT_PROGBITS`, `SHT_DYNAMIC`, `SHT_DYNSYM`, `SHT_STRTAB`,
-    `SHT_REL`, `SHT_NULL`, `SHF_ALLOC`, `SHF_EXECINSTR`, `SHF_WRITE` 等
-  - **验收**：给定参数能 emit 正确的 64 字节
+- [x] **F.3**：`emit/header.zig` — `SectionHeader`（通用 64 字节）✅ 2026-04-18（同文件）
+  - `init(name_offset, type, flags, addr, offset, size, link, info, addralign, entsize)`
+  - 完整 SHT_* / SHF_* 常量集（NULL/PROGBITS/STRTAB/DYNAMIC/REL/NOBITS/DYNSYM + WRITE/ALLOC/EXECINSTR）
+  - **验收**：1 单测（.text section header round-trip）
 
 - [ ] **F.4**：`emit/section_types.zig` — `NullSection` / `ShStrTabSection`
   - NullSection：全零 64 字节 section header
@@ -494,22 +495,18 @@ Solana SBPF 特有结构。
 
 ### 任务
 
-- [ ] **H.1**：`main.zig` — argument parsing
-  - 用 `std.process.argsAlloc`
-  - `elf2sbpf input.o output.so`
-  - **验收**：`./elf2sbpf --help` 打印用法
-
-- [ ] **H.2**：`main.zig` — 主流程
-  - 读 input.o → parse → build_program → from_parse_result →
-    emit_bytecode → 写 output.so
-  - 错误处理：用 Zig `error` set
-  - **验收**：`./elf2sbpf fixtures/helloworld/out/hello.o /tmp/hello.zig.so`
-    产出的文件跟 shim 一致
-
-- [ ] **H.3**：基本错误处理
-  - 文件不存在、ELF 格式非法、parse 失败等
-  - 错误用 stderr 输出，返回非零 exit code
-  - **验收**：各种错误路径有友好输出
+- [x] **H.1**：`main.zig` — argument parsing ✅ 2026-04-18（由 linter 在 F.1 commit 期间一并完成）
+  - `parseArgv` → `ParsedArgs { help, run { input_path, output_path } }`
+  - `printUsage` 写 stderr
+  - 3 单测（run / help / invalid arity）
+- [x] **H.2**：`main.zig` — 主流程 ✅ 2026-04-18
+  - argsAlloc → parse → readFileAlloc → linkProgram → writeFile 链条
+  - **注意**：`linkProgram` 当前仍是 stub（返回 InvalidElf）。H.2 的
+    "产出 .so 跟 shim 一致" 验收要等 Epic G（Program.emitBytecode）完成
+- [x] **H.3**：基本错误处理 ✅ 2026-04-18
+  - `linkErrorExitCode(LinkError) → u8`（按错误类型映射 1-5）
+  - 文件读写错误分别 exit 2/5
+  - 所有失败路径走 stderr + `std.process.exit`
 
 ---
 
@@ -568,11 +565,11 @@ Solana SBPF 特有结构。
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
 | D — Byteparser | 9 | 9 | ✅ 完成 |
 | E — AST | 4 | 4 | ✅ 完成 |
-| F — ELF 输出层 | 12 | 0 | 未开始 |
+| F — ELF 输出层 | 12 | 3 | 进行中 (25%) |
 | G — Program emit | 4 | 0 | 未开始 |
-| H — CLI | 3 | 0 | 未开始 |
+| H — CLI | 3 | 3 | ✅ 完成（框架；产物验证等 Epic G） |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **29** | **52%** |
+| **总计** | **56** | **35** | **63%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

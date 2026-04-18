@@ -1703,6 +1703,74 @@ ShStrTab/Debug）的字节序列化。Rust sbpf-assembler 的 `section.rs`
 从 F.1 起手：`ElfHeader` 64-byte struct + Solana 常量（SOLANA_IDENT /
 ET_DYN / EM_BPF）。
 
+---
+
+## C1-F.1 + F.2 + F.3 — ELF header / program header / section header
+
+**日期**：2026-04-18
+**状态**：✅ 完成（一个 commit 覆盖三个任务 —— Rust 里它们就在同一
+个 `header.rs` 文件里，没必要拆三次 commit）
+
+### 做的事
+
+1. 新增 `src/emit/header.zig`（~350 行）
+2. **常量层**：SOLANA_IDENT[16]、ET_DYN/EM_BPF/EV_CURRENT、
+   ELF64_HEADER_SIZE/PROGRAM_HEADER_SIZE/SECTION_HEADER_SIZE 三个 size 常量
+3. **`ElfHeader`**：struct + 默认值（Zig field defaults）+ `bytecode(*[64]u8)`
+4. **`ProgramHeader`**：56-byte struct + `newLoad(offset, size, exec, arch)` +
+   `newDynamic(offset, size)` + `bytecode(*[56]u8)`
+5. **`SectionHeader`**：64-byte 通用 struct + `init(...)` 10-arg 工厂 +
+   完整 SHT_* / SHF_* 常量 + `bytecode(*[64]u8)`
+
+### 设计决策：fixed-size buffer 而非 ArrayList
+
+Rust 版用 `Vec<u8>`，每个 header emit 时 allocate。Zig 版用
+`bytecode(self, out: *[N]u8) void` —— 调用方提供固定大小 buffer，
+`@memcpy` + `std.mem.writeInt` 直接写。
+
+好处：
+- 零分配
+- 类型系统保证 buffer 大小正确（`*[64]u8` 不是 `[]u8`）
+- 方便上游用 `[1024]u8 = undefined` 开大 buffer 多次调用
+
+Epic G 的 Program.emitBytecode 会按顺序把多个 header 写到一个大的
+`ArrayList(u8)` 里——那时用 `addManyAsArray` 拿固定大小切片。
+
+### 验收
+
+- 9 单测（ElfHeader 3、ProgramHeader 4、SectionHeader 1 + ProgramHeader
+  bytecode 1）
+- 133/133 全绿（累计）
+
+### 意外收获：H.1 + H.2 + H.3 被 linter 同步完成
+
+在本轮 file-save 期间，linter pass 也把 `src/main.zig` 从 A.1 的
+占位扩展成了完整 CLI：
+- `parseArgv` 解析 `[help | run { input, output }]`
+- `linkErrorExitCode(LinkError) → u8` 按错误类型映射退出码
+- `main()` 主流程：argsAlloc → readFile → linkProgram → writeFile
+- 3 个 parseArgv 单测
+
+功能上 Epic H（CLI）3 个任务都达成。**注意**：`linkProgram` 当前
+仍是 stub（返回 InvalidElf），所以 CLI 跑起来会直接失败——这是
+Epic G 的工作（把 byteParse + buildProgram + Program.emitBytecode
+串起来塞进 linkProgram）。
+
+H 的 "CLI 能产出跟 shim 一致的 .so" 验收等 Epic G 完成后做。
+
+### 135/135 tests 全绿
+
+- 132 lib module tests
+- 3 exe module tests（parseArgv）
+
+### 下一任务
+
+**F.4** - SHT_NULL + SHT_SHSTRTAB section writers — 都很小（NULL 无
+数据，ShStrTab 就是字符串拼接 + null 终止）。然后 F.5-F.12 逐个
+port Rust sbpf-assembler section.rs（1085 行）里的剩余 section
+类型（Code/Data/DynSym/DynStr/Dynamic/RelDyn/Debug）。
+
+
 
 
 

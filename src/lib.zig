@@ -47,6 +47,12 @@ pub const GlobalDecl = ast_node.GlobalDecl;
 const ast_mod = @import("ast/ast.zig");
 pub const AST = ast_mod.AST;
 pub const SbpfArch = ast_mod.SbpfArch;
+pub const ParseResult = ast_mod.ParseResult;
+
+const emit_header = @import("emit/header.zig");
+pub const ElfHeader = emit_header.ElfHeader;
+pub const ProgramHeader = emit_header.ProgramHeader;
+pub const SectionHeader = emit_header.SectionHeader;
 
 // Make sub-module tests runnable via `zig build test`.
 test {
@@ -63,6 +69,7 @@ test {
     _ = @import("parse/byteparser.zig");
     _ = @import("ast/node.zig");
     _ = @import("ast/ast.zig");
+    _ = @import("emit/header.zig");
     _ = @import("integration_test.zig");
 }
 
