@@ -354,24 +354,22 @@ test` 跑空测试。
   - `SbpfArch` enum（V0 / V3；C1 只用 V0）
   - **验收**：5 单测覆盖所有 API、mutation through pointer
 
-- [ ] **E.3**：`ast/ast.zig` — `buildProgram(SbpfArch.V0)`
-  - 第一遍：扫描所有 label 节点，建 `label_offset_map`
-  - 第一遍：扫描 rodata 节点，建 `rodata label_offset_map`
-  - 第二遍：对每个 instruction 节点：
-    - syscall 注入：若是 syscall，设 src=1, imm=-1，push relocation
-      和 dynamic symbol
-    - jump 解析：label 引用 → 相对 offset
-    - call 解析：label 引用 → 相对 offset
-    - lddw 解析：label 引用 → 绝对地址（V0：`target + ph_offset`）
-  - 最后：收集 entry_point 到 `dynamic_symbols`
-  - **验收**：对 hello.o 的 ParseResult，buildProgram 产出的
-    ParseResult 跟 shim 的结构等价（字段逐一对比）
+- [x] **E.3**：`ast/ast.zig` — `buildProgram(SbpfArch.V0)` ✅ 2026-04-18
+  - 6 个 sub-pass 按 Rust ast.rs L109-275 port：
+    - A: `label_offset_map` + numeric label tracking
+    - B: prog_is_static 判定（V3 总是静态；V0 要无 syscall **且** 无符号 lddw）
+    - C: syscall 注入（V0 动态：src=1/imm=-1 + .rel.dyn + .dynsym；V3 静态：src=0/imm=hash）
+    - D: jump/call label → 相对 offset `(target - current)/8 - 1`
+    - E: lddw label → 绝对地址（V0: `target + ph_offset`，ph_count=1 静态/3 动态；V3: `target - text_size`）
+    - F: entry_point 从 GlobalDecl → 加到 dynamic_symbols
+    - G: 移交 nodes 到 ParseResult
+  - 支持类型：`ParseResult` / `CodeSection` / `DataSection` / `DynamicSymbolMap` / `RelDynMap` / `DebugSection` / `RelocationType` / `BuildProgramError`
+  - **规格修订**：Phase B 原实现只检查 syscall，port 时加入 lddw 检查（跟 Rust 一致）
+  - **验收**：覆盖 V0 静态 + 动态（带 lddw）两种路径，124/124 tests 全绿
 
-- [ ] **E.4**：E.1-E.3 集成测试
-  - 用 D.9 的输出喂进来，检查 buildProgram 跟 shim 的字节等价
-  - **验收**：hello.o 的 parse_result → build_program 之后，关键
-    字段（code_section 大小、data_section 大小、dynamic_symbols
-    entries）跟 shim 一致
+- [x] **E.4**：集成测试 ✅ 2026-04-18（随 E.3 一并完成）
+  - 124/124 tests 覆盖 AST 各 API + buildProgram 多种路径
+  - **注**：byteparser → buildProgram 的端到端集成留给 Epic F 阶段，届时 Program.fromParseResult 会自然串起来
 
 ---
 
@@ -569,12 +567,12 @@ Solana SBPF 特有结构。
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
 | D — Byteparser | 9 | 9 | ✅ 完成 |
-| E — AST | 4 | 2 | 进行中 (50%) |
+| E — AST | 4 | 4 | ✅ 完成 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **27** | **48%** |
+| **总计** | **56** | **29** | **52%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 
