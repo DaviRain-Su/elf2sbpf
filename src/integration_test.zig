@@ -456,7 +456,7 @@ test "D.7.10 V2: transfer rosetta .o shrinks under --peephole (1 cluster)" {
     try testing.expectEqualSlices(u8, "\x7fELF", peephole_out[0..4]);
 }
 
-test "D.7.10 V2: pubkey rosetta .o shrinks under --peephole (non-interleaved subset)" {
+test "D.7.10 V2.1: pubkey rosetta .o shrinks under --peephole (all 8 clusters)" {
     const allocator = testing.allocator;
 
     const default_out = try lib.linkProgram(allocator, rosetta_pubkey_o);
@@ -465,11 +465,12 @@ test "D.7.10 V2: pubkey rosetta .o shrinks under --peephole (non-interleaved sub
     const peephole_out = try lib.linkProgramOptimized(allocator, rosetta_pubkey_o);
     defer allocator.free(peephole_out);
 
-    // V2.0 rewrites the 2 tail clusters of pubkey (the 6 interleaved
-    // clusters at the start are refused by the safety guard). Each
-    // non-interleaved cluster saves 168 bytes, so we expect exactly
-    // 336 bytes removed.
-    try testing.expectEqual(default_out.len - 336, peephole_out.len);
+    // V2.1 groups interleaved clusters into super-clusters and rewrites
+    // them together. Pubkey has 8 clusters total (3 super-clusters of 2
+    // + 2 singletons), so all 8 get rewritten = 8 × 21 = 168 insns
+    // removed = 1344 bytes. This matches the V1 detector's estimate
+    // exactly, closing the 12.5× CU gap against solana-zig.
+    try testing.expectEqual(default_out.len - 1344, peephole_out.len);
     try testing.expectEqualSlices(u8, "\x7fELF", peephole_out[0..4]);
 }
 

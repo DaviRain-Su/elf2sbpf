@@ -303,14 +303,38 @@ gap 基本都来自这里。
   1768B → 1432B（-336B / -42 insns），CU 估计 187 → 145
 - 9 个 solana-zig 编的 V0 goldens：默认路径字节对等 100% 保留
 
-**V2.1 未做（interleaved clusters）**：
-- pubkey 的前 6 个 cluster 互相交织（ldxb 节点互相落在对方 span
-  内）。V2.1 需要"多 cluster 联合重写"：先合并成"super-cluster"，
-  一次性把这个区域里的所有 ldxb/shift/or 全删掉，插入 N 条 ldxdw
-- 技术难点：super-cluster 里每个 ldxdw 的最终目标 reg 需要做 SSA
-  -like 数据流追踪确定；不能再用"最后一个 Or64Reg 的 dst"的简单
-  heuristic
-- 估计 2-3 天；等 pubkey-style gap（12.5×）被用户真正关心时再做
+**V2.1 super-cluster 重写（已完成，2026-04-18）**：
+
+- `buildComponents`：union-find 把互相交织的 cluster 分成连通分量。
+  两个 cluster 交织 iff 任一的 ldxb 节点落在另一的 `computeSpanEnd`
+  范围内
+- `taintPropagate`：对 super-span 里每条指令做 SSA-like 数据流，
+  追踪每个 register 的 `(base_reg, base_min, u64 mask)` taint。
+  `Ldxb rX, [base+off]` 把 taint 置位；`Or64Reg rX, rY` 合并 taint；
+  shift 不影响 byte membership
+- `matchClustersToRegs`：每个 cluster 的目标 reg = taint.mask 正好
+  覆盖 `[base_offset, base_offset+7]` 8 个 bit 的 register。歧义时
+  拒绝整个 super-cluster
+- 拓扑排序 ldxdw 发射顺序："读 rX" 必须排在 "写 rX" 之前，防止
+  `ldxdw r1, [r1+0x28]; ldxdw r2, [r1+0x48]` 这种 self-clobber base
+- **Fallback 机制**：如果 super-cluster 安全检查（全 whitelist / 无
+  jump target 落入 / taint match 成功）失败，回退到逐个 member 尝试
+  V2.0 单独重写路径。保证 V2.1 行为永远 ≥ V2.0
+
+**实测**：
+- **pubkey.stock-zig.o**：1768 → **424 字节**（-1344 / **-168 insns**，
+  8/8 cluster 全部重写）—— 完全闭合 187 CU → ~15 CU 的 12.5× gap
+- transfer-lamports：552 字节（V2.0 水平，1 cluster 本来就非交织）
+- vault：11872 字节（通过 fallback 保持 V2.0 的 48 insn 节省）
+
+**仍然未做（V2.2 候选）**：
+- register 活跃性分析：当前 taint 逻辑假设 shift/or 链里的中间
+  寄存器都是死的（rewrite 后不会被外部读）。目前靠 `verifyCluster`
+  的 whitelist-only 约束间接保证，但没做完整 liveness。对更大/更
+  复杂的程序可能还有 false positives
+- 多 pass / 迭代 rewrite：fallback 路径只尝试每个 super-cluster
+  的第一个 member。理论上 rewriteAll 可以跑到 fixed-point（再跑一
+  遍会有新的 cluster 变成非交织）。目前单 pass 就够处理 pubkey
 
 **集成测试**（`integration_test.zig`）：
 1. `linkProgramOptimized(rosetta-transfer.stock-zig.o)` = -168B ✓
@@ -372,7 +396,7 @@ gap 基本都来自这里。
 | D.4 Zig 库 API | ✅ 完成，v0.3.0 已发 |
 | D.5 Windows | 未开始（等用户报需求） |
 | D.6 跨语言前端 | 战略愿景，不排期 |
-| **D.7 字节码层优化** | 路线图就位，D.7.10 V1 detector + V2.0 rewriter（非交织）已落，V2.1 交织版本未排期 |
+| **D.7 字节码层优化** | 路线图就位，D.7.10 V1 detector + V2.0 rewriter（非交织）+ V2.1 super-cluster 交织重写全部已落；V2.2 liveness / 多 pass 未排期 |
 
 ---
 
