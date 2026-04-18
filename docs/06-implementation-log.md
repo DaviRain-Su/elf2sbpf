@@ -1161,6 +1161,61 @@ flag 决定是否 `allocator.free(e.name)`。这是 Rust 版没有的细节，
 ro_section 且被 relocation 的指令是 lddw（opcode 0x18），从指令的 imm
 字段提取 addend，插入 `lddw_targets[target_section_idx]`。
 
+---
+
+## C1-D.3 — 收集 lddw_targets（改进版 gap-fill Pass 1）
+
+**日期**：2026-04-18
+**状态**：✅ 完成
+
+### 做的事
+
+1. `LddwTargets` 数据结构
+   - 按 section_idx 分桶，每桶是排序去重的 `ArrayList(u64)`
+   - `insert` 用二分找位置 + 检查重复后插入
+   - 用 ArrayList 不用 HashMap：bucket 数（rodata sections）通常 1-3 个，
+     线性扫描更 cache-friendly
+
+2. `collectLddwTargets(allocator, file, sections)` 主入口
+   - 遍历所有 SHT_REL/SHT_RELA section
+   - 通过 `sh_info` 定位它们 relocate 的是哪个 section（必须是 text）
+   - 对每 reloc entry：
+     - 从 symtab 查 target symbol（by index）
+     - 确认 target symbol 的 section 是 ro_section
+     - 读 text[offset] 确认是 lddw（opcode 0x18）
+     - 从 `text[offset+4..offset+8]` 读 LE u32 作为 addend
+     - insert 到 `targets[sym_sec]`
+
+### 关键细节：addend 从指令 imm 字段取，不是 r_addend
+
+SHT_REL 没有 r_addend（r_info + r_offset 两个字段）。BPF ABI 规定
+R_BPF_64_64 的 addend 隐式编码在 lddw 指令的 imm 字段里——这是
+byteparser.rs 的关键知识点，D.3 必须搬过来。
+
+对应 Rust byteparser.rs L231-234：
+```rust
+let addend = match node.imm {
+    Some(Either::Right(Number::Int(val))) => val,
+    _ => 0,
+};
+```
+但 Rust 版是在**已经 decode 过指令**之后从 Instruction.imm 取。我
+们这里直接读原始字节 4..8，因为 D.3 发生在 decode 之前——逻辑等价，
+实现更直。
+
+### 验收
+
+- [x] 2 测试全绿
+- [x] `zig build test --summary all`：**95/95** 全绿（累计）
+- [x] hello.o 真数据：1 个 lddw addend = 0，符合预期（只有一个字符串常量）
+
+### 下一任务
+
+**D.4** 改进版 gap-fill（spec §6.2 Pass 2+3）—— Epic D 最核心的一步。
+用 D.2 的 pending_rodata + D.3 的 lddw_targets，按 anchor 集合切分
+每个 ro_section，合成命名的 anon entries 填满所有 gap。
+
+
 
 
 

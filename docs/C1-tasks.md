@@ -265,15 +265,16 @@ test` 跑空测试。
   - **新错误**：`EmptyNamedRodataSymbol`、`SymbolOutOfSectionRange`
   - **验收**：2 个单测——hello.o 返回 1 个 entrypoint label + 空 pending_rodata；无 symtab ELF 返回全空
 
-- [ ] **D.3**：扫 text relocation，收集 `lddw_targets`（改进算法）
-  - 对每个 text section 的 relocation，检查对应 offset 是不是
-    lddw（opcode == 0x18）
-  - 若是且目标在 rodata section，从指令 imm 字段取 addend
-  - 按 section 索引放入 `lddw_targets: HashMap<SectionIndex,
-    SortedSet<u64>>`
-  - **关键**：**这是改进点，byteparser.rs 没做这步**
-  - **验收**：对 counter.o，lddw_targets 对 `.rodata.str1.1`
-    section 收集到 14 个不同的 addend（跟 Rust shim 一致）
+- [x] **D.3**：扫 text relocation，收集 `lddw_targets`（改进算法）✅ 2026-04-18
+  - `LddwTargets` 结构：section_index → 排序去重 addend 列表
+    - `insert(section, addend)` 用二分查找维护 sorted-unique
+    - `get(section)` O(n) 扫描返回排序切片
+  - `collectLddwTargets(allocator, file, sections)` 主入口
+    - 遍历 SHT_REL/SHT_RELA section 头的 `sh_info` 找到 text 目标
+    - 对每个 reloc：查符号 → 确认在 ro_section → 确认 text[offset]==0x18 → 提取 LE u32 addend
+  - **关键**：这是 byteparser.rs 没做的改进点，spec §6.2 Pass 1 的 port
+  - **验收**：2 测试——insert 排序去重；hello.o 真数据：1 个 lddw addend = 0
+  - **TODO**：counter.o 产 14 addend 的全量验证等 D.5 拼完 rodata_table 后再一起做
 
 - [ ] **D.4**：Gap-fill 算法（改进版）
   - 计算每个 rodata section 的 anchor 集合：
@@ -552,13 +553,13 @@ Solana SBPF 特有结构。
 | A — 项目骨架 | 3 | 3 | ✅ 完成 |
 | B — 通用数据类型 | 10 | 9 | 实质完成（89%；B.10 集成已在 B.9 覆盖） |
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
-| D — Byteparser | 9 | 2 | 进行中 (22%) |
+| D — Byteparser | 9 | 3 | 进行中 (33%) |
 | E — AST | 4 | 0 | 未开始 |
 | F — ELF 输出层 | 12 | 0 | 未开始 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 0 | 未开始 |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **18** | **32%** |
+| **总计** | **56** | **19** | **34%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

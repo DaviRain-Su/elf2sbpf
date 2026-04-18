@@ -19,6 +19,8 @@ const std = @import("std");
 const elf_mod = @import("../elf/reader.zig");
 const section_mod = @import("../elf/section.zig");
 const symbol_mod = @import("../elf/symbol.zig");
+const reloc_mod = @import("../elf/reloc.zig");
+const instruction_mod = @import("../common/instruction.zig");
 
 pub const ParseError = error{
     InvalidElf,
@@ -296,6 +298,152 @@ pub fn scanSymbols(
     };
 }
 
+/// Per-section sorted set of lddw target addends. Key = ELF section index
+/// of the target rodata section; values = the set of byte offsets (addends)
+/// within that section that some lddw instruction references.
+///
+/// Used by D.4's gap-fill pass to subdivide each rodata section at every
+/// lddw target, so the rodata_table lookup always finds a matching entry
+/// (fixes the byteparser.rs single-STT_SECTION-symbol bug identified in C0).
+///
+/// Implemented as a flat ArrayList of (section_idx, ArrayList<u64>) pairs,
+/// sorted for deterministic iteration. The inner list is kept sorted+deduped
+/// on insert so downstream consumers can rely on monotonically increasing
+/// anchors.
+pub const LddwTargets = struct {
+    allocator: std.mem.Allocator,
+    entries: std.ArrayList(Entry),
+
+    pub const Entry = struct {
+        section_index: u16,
+        addends: std.ArrayList(u64), // sorted ascending, unique
+    };
+
+    pub fn init(allocator: std.mem.Allocator) LddwTargets {
+        return .{ .allocator = allocator, .entries = .empty };
+    }
+
+    pub fn deinit(self: *LddwTargets) void {
+        for (self.entries.items) |*e| {
+            e.addends.deinit(self.allocator);
+        }
+        self.entries.deinit(self.allocator);
+    }
+
+    /// Insert `addend` into the section's sorted-unique set, creating the
+    /// section entry if it doesn't exist.
+    pub fn insert(self: *LddwTargets, section_index: u16, addend: u64) !void {
+        // Find or create the entry.
+        var slot: ?*Entry = null;
+        for (self.entries.items) |*e| {
+            if (e.section_index == section_index) {
+                slot = e;
+                break;
+            }
+        }
+        if (slot == null) {
+            try self.entries.append(self.allocator, .{
+                .section_index = section_index,
+                .addends = .empty,
+            });
+            slot = &self.entries.items[self.entries.items.len - 1];
+        }
+        const e = slot.?;
+
+        // Binary search for insertion position; skip duplicates.
+        var lo: usize = 0;
+        var hi: usize = e.addends.items.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (e.addends.items[mid] < addend) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if (lo < e.addends.items.len and e.addends.items[lo] == addend) return;
+        try e.addends.insert(self.allocator, lo, addend);
+    }
+
+    /// Return the sorted addend list for a section, or null if none.
+    pub fn get(self: *const LddwTargets, section_index: u16) ?[]const u64 {
+        for (self.entries.items) |e| {
+            if (e.section_index == section_index) return e.addends.items;
+        }
+        return null;
+    }
+};
+
+/// Pass D.3: scan every text section's relocation table. For each reloc
+/// whose target symbol resolves to a ro_section, decode the relocated
+/// instruction — if it's lddw (opcode 0x18), extract the 32-bit addend
+/// from bytes 4..8 of the instruction and insert it into
+/// `lddw_targets[target_section_idx]`.
+///
+/// The addend is stored **inside** the lddw immediate (it's an implicit
+/// addend for R_BPF_64_64). Mirrors Rust spec §6.2 Pass 1.
+///
+/// Relocation sections are matched to text sections via `sh_info`: the
+/// `sh_info` of a REL/RELA section holds the index of the section it
+/// relocates. We scan all sections for REL types whose sh_info points
+/// at a .text* section.
+pub fn collectLddwTargets(
+    allocator: std.mem.Allocator,
+    file: *const elf_mod.ElfFile,
+    sections: *const SectionScan,
+) !LddwTargets {
+    var targets = LddwTargets.init(allocator);
+    errdefer targets.deinit();
+
+    // Find REL/RELA sections and filter those targeting a text section.
+    var sec_it = file.iterSections();
+    while (try sec_it.next()) |rel_sec| {
+        const kind = rel_sec.kind();
+        if (kind != std.elf.SHT_REL and kind != std.elf.SHT_RELA) continue;
+
+        const target_sec_idx_raw = rel_sec.header.sh_info;
+        if (target_sec_idx_raw > std.math.maxInt(u16)) continue;
+        const target_sec_idx: u16 = @intCast(target_sec_idx_raw);
+
+        // Only consider relocations that operate on a text section.
+        const text_sec = blk: {
+            for (sections.text_bases.items) |tb| {
+                if (tb.section.index == target_sec_idx) break :blk tb.section;
+            }
+            continue;
+        };
+
+        var rel_it = try file.iterRelocations(rel_sec);
+        while (rel_it.next()) |r| {
+            // Resolve the target symbol's section.
+            var sym_iter = file.iterSymbols(.symtab) catch continue;
+            var target_sym: ?symbol_mod.Symbol = null;
+            var i: u32 = 0;
+            while (try sym_iter.next()) |s| : (i += 1) {
+                if (i == r.symbol_index) {
+                    target_sym = s;
+                    break;
+                }
+            }
+            const sym = target_sym orelse continue;
+            const sym_sec = sym.sectionIndex() orelse continue;
+            if (sections.roSectionByIndex(sym_sec) == null) continue;
+
+            // Decode the instruction at r.offset to confirm it's lddw
+            // and extract the addend.
+            const off: usize = @intCast(r.offset);
+            if (off + 8 > text_sec.data.len) continue;
+            if (text_sec.data[off] != 0x18) continue; // not lddw
+
+            // Addend = u32 from bytes 4..8 of the first slot (LE), as u64.
+            const addend = std.mem.readInt(u32, text_sec.data[off + 4 .. off + 8][0..4], .little);
+            try targets.insert(sym_sec, @as(u64, addend));
+        }
+    }
+
+    return targets;
+}
+
 // --- tests ---
 
 const testing = std.testing;
@@ -424,4 +572,42 @@ test "scanSections: multiple text sections accumulate base offsets" {
     // decoding needs to straddle section boundaries.)
     //
     // Skipped for D.1; revisit in D.6 integration.
+}
+
+test "LddwTargets: insert maintains sorted-unique invariant" {
+    var t = LddwTargets.init(testing.allocator);
+    defer t.deinit();
+
+    try t.insert(1, 10);
+    try t.insert(1, 5);
+    try t.insert(1, 20);
+    try t.insert(1, 10); // duplicate — should be ignored
+    try t.insert(2, 100);
+
+    const sec1 = t.get(1).?;
+    try testing.expectEqualSlices(u64, &.{ 5, 10, 20 }, sec1);
+
+    const sec2 = t.get(2).?;
+    try testing.expectEqualSlices(u64, &.{100}, sec2);
+
+    try testing.expectEqual(@as(?[]const u64, null), t.get(99));
+}
+
+test "collectLddwTargets: hello.o finds 1 lddw addend at offset 0" {
+    const hello_bytes = @embedFile("../testdata/hello.o");
+    const file = try elf_mod.ElfFile.parse(hello_bytes);
+
+    var sections = try scanSections(testing.allocator, &file);
+    defer sections.deinit();
+
+    var targets = try collectLddwTargets(testing.allocator, &file, &sections);
+    defer targets.deinit();
+
+    // hello.o has exactly one lddw in its .text, pointing at offset 0
+    // of .rodata.str1.1.
+    try testing.expectEqual(@as(usize, 1), targets.entries.items.len);
+
+    const rodata_idx = sections.ro_sections.items[0].section.index;
+    const addends = targets.get(rodata_idx).?;
+    try testing.expectEqualSlices(u64, &.{0}, addends);
 }
