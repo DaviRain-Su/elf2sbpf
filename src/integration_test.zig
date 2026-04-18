@@ -276,6 +276,29 @@ const goldens = [_]Golden{
     },
 };
 
+test "integration: linkProgramWithSyscalls restores state + unused extras are a no-op" {
+    // D.3 surface check: the thread-local extra syscalls must be save/
+    // restored around the pipeline call, and passing extras that no
+    // program in the fixture actually uses must yield output identical
+    // to `linkProgram`.
+    const allocator = testing.allocator;
+    const baseline = try lib.linkProgram(allocator, hello_bytes);
+    defer allocator.free(baseline);
+
+    // hello.o only calls built-in sol_log_; my_fake_syscall never fires.
+    const extras = [_][]const u8{ "my_fake_syscall", "another_one" };
+    const with_extras = try lib.linkProgramWithSyscalls(allocator, hello_bytes, &extras);
+    defer allocator.free(with_extras);
+
+    try testing.expectEqualSlices(u8, baseline, with_extras);
+
+    // And a subsequent plain linkProgram call must still work — verifies
+    // the thread-local was properly restored to its prior value (null).
+    const baseline2 = try lib.linkProgram(allocator, hello_bytes);
+    defer allocator.free(baseline2);
+    try testing.expectEqualSlices(u8, baseline, baseline2);
+}
+
 test "integration: 9 zignocchio examples byte-match reference-shim" {
     const allocator = testing.allocator;
 

@@ -167,9 +167,22 @@ pub const REGISTERED_SYSCALLS = [_][]const u8{
     "sol_get_stack_height",
 };
 
+/// Thread-local list of additional syscall names that `nameForHash`
+/// will consult in addition to `REGISTERED_SYSCALLS`. Callers opt in
+/// via `elf2sbpf.linkProgramWithSyscalls` (D.3) — most users won't
+/// touch this directly; `linkProgram` leaves it at null and only the
+/// 30 built-in Solana syscalls get resolved.
+///
+/// Rationale for thread-local: `Instruction.fromBytes` is called from
+/// many layers (byteparser, tests, library consumers) and threading an
+/// extra parameter through every call site would be a big surface
+/// change. Using a threadlocal keeps the common case zero-overhead.
+pub threadlocal var thread_extra_syscalls: ?[]const []const u8 = null;
+
 /// Reverse-lookup a murmur3-hashed syscall identifier. Returns the
 /// registered name, or `null` if the hash doesn't correspond to any
-/// known syscall.
+/// known syscall. Checks `REGISTERED_SYSCALLS` first, then
+/// `thread_extra_syscalls` if the caller registered additional names.
 ///
 /// Used by `Instruction.fromBytes` to resolve `call src=0, imm=hash`
 /// back to the syscall name so buildProgram can produce the correct
@@ -177,6 +190,11 @@ pub const REGISTERED_SYSCALLS = [_][]const u8{
 pub fn nameForHash(hash: u32) ?[]const u8 {
     inline for (REGISTERED_SYSCALLS) |name| {
         if (murmur3_32(name) == hash) return name;
+    }
+    if (thread_extra_syscalls) |extras| {
+        for (extras) |name| {
+            if (murmur3_32(name) == hash) return name;
+        }
     }
     return null;
 }
@@ -188,4 +206,32 @@ test "nameForHash resolves sol_log_" {
 
 test "nameForHash returns null for unknown hash" {
     try std.testing.expectEqual(@as(?[]const u8, null), nameForHash(0xdead_beef));
+}
+
+test "nameForHash consults thread_extra_syscalls when set" {
+    const extras = [_][]const u8{ "my_custom_syscall", "another_one" };
+    const saved = thread_extra_syscalls;
+    thread_extra_syscalls = &extras;
+    defer thread_extra_syscalls = saved;
+
+    const hash = murmur3_32("my_custom_syscall");
+    try std.testing.expectEqualStrings("my_custom_syscall", nameForHash(hash).?);
+
+    // Built-ins still resolve.
+    const sol_log_hash = murmur3_32("sol_log_");
+    try std.testing.expectEqualStrings("sol_log_", nameForHash(sol_log_hash).?);
+
+    // Truly unknown stays unknown.
+    try std.testing.expectEqual(@as(?[]const u8, null), nameForHash(0xdead_beef));
+}
+
+test "nameForHash: clearing thread_extra_syscalls removes extras" {
+    const extras = [_][]const u8{"solx_custom"};
+    const hash = murmur3_32("solx_custom");
+
+    thread_extra_syscalls = &extras;
+    try std.testing.expectEqualStrings("solx_custom", nameForHash(hash).?);
+
+    thread_extra_syscalls = null;
+    try std.testing.expectEqual(@as(?[]const u8, null), nameForHash(hash));
 }

@@ -127,6 +127,31 @@ pub const LinkError = error{
 ///   - Return value owned by caller; free with `allocator.free`.
 ///   - Pure function: same input produces the same output.
 ///   - Any failure returns a `LinkError` member; never panics on bad input.
+/// Same as `linkProgram`, but allows the caller to register additional
+/// syscall names (on top of the 30 built-in Solana syscalls) whose
+/// murmur3-32 hashes should be reverse-resolved when decoding `call`
+/// instructions with `src=0`. Useful for Solana runtime forks or
+/// experimental programs that define custom syscalls.
+///
+/// `extra_syscalls` is a borrowed slice; the caller retains ownership
+/// and must keep it alive for the duration of the call. Passing an
+/// empty slice (or using `linkProgram` directly) is the same as no
+/// extras.
+///
+/// Returns byte-identical output to `linkProgram` for any program that
+/// only uses the built-in syscalls (D.3 is a purely additive API).
+pub fn linkProgramWithSyscalls(
+    allocator: std.mem.Allocator,
+    elf_bytes: []const u8,
+    extra_syscalls: []const []const u8,
+) LinkError![]u8 {
+    const syscalls_mod = @import("common/syscalls.zig");
+    const saved = syscalls_mod.thread_extra_syscalls;
+    syscalls_mod.thread_extra_syscalls = extra_syscalls;
+    defer syscalls_mod.thread_extra_syscalls = saved;
+    return linkProgram(allocator, elf_bytes);
+}
+
 pub fn linkProgram(
     allocator: std.mem.Allocator,
     elf_bytes: []const u8,

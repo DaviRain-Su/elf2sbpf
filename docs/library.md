@@ -77,6 +77,36 @@ that error set is stable across v0.x — see
 [`src/lib.zig`](https://github.com/DaviRain-Su/elf2sbpf/blob/main/src/lib.zig)
 for the full list.
 
+## Custom syscalls (since v0.4.0)
+
+By default, elf2sbpf knows about the 30 built-in Solana syscalls (see
+`REGISTERED_SYSCALLS` in `src/common/syscalls.zig`). If your program
+uses a custom syscall — e.g. a Solana runtime fork, a research VM, or
+an experimental sBPF opcode — register the extra names via
+`linkProgramWithSyscalls`:
+
+```zig
+const extras = [_][]const u8{
+    "my_custom_cpi",
+    "my_experimental_hash",
+};
+const so_bytes = try elf2sbpf.linkProgramWithSyscalls(gpa, elf_bytes, &extras);
+```
+
+Behavior:
+
+- Matching is by murmur3_32 hash (same algorithm Solana uses)
+- Built-ins are always checked first; extras are consulted after
+- For programs that only call built-ins, output is byte-identical to
+  `linkProgram` (the extras are simply unused)
+- The extras slice is borrowed for the call — caller retains ownership
+  and can free immediately after `linkProgramWithSyscalls` returns
+
+Internally this sets a thread-local that `Instruction.fromBytes`
+consults when resolving `call src=0, imm=<hash>` instructions. The
+thread-local is saved/restored around the call, so concurrent or
+nested `linkProgram*` invocations don't leak state.
+
 ## Stable surface
 
 The following are considered part of the public API and covered by
@@ -85,6 +115,7 @@ SemVer (no breaking changes within v0.x):
 | Symbol | Shape | Stable? |
 |---|---|---|
 | `elf2sbpf.linkProgram(allocator, elf_bytes)` | `LinkError![]u8` | ✅ yes |
+| `elf2sbpf.linkProgramWithSyscalls(allocator, elf_bytes, extras)` | `LinkError![]u8` | ✅ yes (since v0.4.0) |
 | `elf2sbpf.LinkError` | error set | ✅ yes |
 | `elf2sbpf.Program` | struct (read-only) | ✅ for inspection |
 | `elf2sbpf.Program.fromParseResult` | constructor | ✅ yes |

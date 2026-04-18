@@ -7,8 +7,40 @@ and [SemVer](https://semver.org/). Dates use the `YYYY-MM-DD` format.
 
 ## [Unreleased]
 
-- D.3 dynamic syscall registry, D.1 V3 arch — prioritized based on
-  ecosystem demand.
+- D.1 V3 arch — prioritized when Solana runtime pushes V3 as default
+- D.5 Windows support — prioritized if Windows users show up
+- D.6 cross-language frontends — strategic, no schedule
+
+## [0.4.0] — 2026-04-18
+
+D.3 — Custom syscall registry.
+
+### Added
+
+- **`elf2sbpf.linkProgramWithSyscalls(allocator, elf_bytes, extras)`**
+  — like `linkProgram`, but the caller can register additional
+  syscall names whose murmur3-32 hashes get reverse-resolved during
+  `call src=0, imm=<hash>` decoding. Useful for Solana runtime forks
+  / experimental VMs / research programs with custom syscalls
+- **Thread-local plumbing** (`thread_extra_syscalls` in
+  `common/syscalls.zig`): lets `nameForHash` consult caller-provided
+  extras without threading a parameter through every decode call
+  site. Save/restore around the top-level call; no state leaks across
+  nested or concurrent invocations
+- **`docs/library.md`** new "Custom syscalls" section
+
+### Changed
+
+- `nameForHash` now checks `thread_extra_syscalls` as a fallback after
+  `REGISTERED_SYSCALLS`. For callers that don't set the thread-local
+  (the default — `linkProgram` itself), behavior is unchanged
+
+### Compatibility
+
+- Zero breaking changes: `linkProgram` keeps its v0.1 signature and
+  output for programs using only built-in syscalls
+- `linkProgram(a, b)` is exactly equivalent to
+  `linkProgramWithSyscalls(a, b, &.{})`
 
 ## [0.3.0] — 2026-04-18
 
@@ -147,7 +179,8 @@ Ported from [blueshift-gg/sbpf-linker](https://github.com/blueshift-gg/sbpf-link
 
 ---
 
-[Unreleased]: https://github.com/DaviRain-Su/elf2sbpf/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/DaviRain-Su/elf2sbpf/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.4.0
 [0.3.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.3.0
 [0.2.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.2.0
 [0.1.0]: https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.1.0

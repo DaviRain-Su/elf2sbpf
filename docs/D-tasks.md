@@ -162,9 +162,17 @@ Phase 3/4/5。
 
 ## 其他 D 任务
 
-- **D.3 Dynamic syscall relocation**：当前 `REGISTERED_SYSCALLS`
-  是静态 30 条；要支持 runtime-extensible 得引入 DynamicSyscallMap
-  + 允许调用方在 `linkProgram` 参数里注入自定义 syscall 表
+- **D.3 Dynamic syscall relocation** ✅ 2026-04-18（v0.4.0）：
+  - 新增 `linkProgramWithSyscalls(allocator, elf_bytes, extras)`，
+    允许注入自定义 syscall 名字
+  - 底层机制：`thread_extra_syscalls` threadlocal var；`nameForHash`
+    先查内置 30 条再查 extras；save/restore 语义保证不跨调用泄漏
+  - `linkProgram(a, b) ≡ linkProgramWithSyscalls(a, b, &.{})`，
+    不破坏现有 API；built-in-only 程序产出字节不变
+  - 文档：`docs/library.md` 加 "Custom syscalls (since v0.4.0)" 节
+  - 测试：3 个 `nameForHash` 单测 + 1 个 integration test
+    （extras 不动时 byte-identical to `linkProgram`；save/restore
+    在连续调用间稳定）
 - **D.5 Windows**：未验证；Zig 理论上跨平台。主要是 path
   separator + file I/O 的 regression
 - **D.6 跨语言前端**：战略愿景，不排期
@@ -177,7 +185,7 @@ Phase 3/4/5。
 |------|------|
 | D.1 V3 arch | 未开始（等触发条件） |
 | D.2 Debug info | ✅ 完成，v0.2.0 已发 |
-| D.3 Dynamic syscall | 未开始 |
+| D.3 Dynamic syscall | ✅ 完成，v0.4.0 已发 |
 | D.4 Zig 库 API | ✅ 完成（infra + docs；v0.3.0 release 进行中） |
 | D.5 Windows | 未开始 |
 | D.6 跨语言 | 战略愿景，不排期 |
