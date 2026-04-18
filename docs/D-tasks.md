@@ -77,7 +77,12 @@
   - 字节对等已传递覆盖运行时；mini-debug.shim.so 跟 elf2sbpf 产物
     byte-identical，即跟"reference-shim 能跑的一切"等价
 
-- [ ] **D.2.5**：v0.2.0 release —— 进行中
+- [x] **D.2.5**：v0.2.0 release ✅ 2026-04-18
+  - `build.zig.zon` 0.1.0 → 0.2.0；CHANGELOG `[0.2.0]` 条目
+  - Annotated tag `v0.2.0` + cross-compiled 3 artifact
+    （macOS arm64 / Linux x86_64 / Linux arm64）+ SHA256SUMS
+  - Download-verify：10/10 goldens MATCH release binary
+  - **Release**：https://github.com/DaviRain-Su/elf2sbpf/releases/tag/v0.2.0
 
 ### 验收
 
@@ -157,9 +162,9 @@ Phase 3/4/5。
 | 任务 | 状态 |
 |------|------|
 | D.1 V3 arch | 未开始（等触发条件） |
-| D.2 Debug info | 未开始（**推荐 P0**） |
+| D.2 Debug info | ✅ 完成，v0.2.0 已发 |
 | D.3 Dynamic syscall | 未开始 |
-| D.4 Zig 库 API | 未开始（**推荐 P1**） |
+| D.4 Zig 库 API | 未开始（**接下来的 P0**） |
 | D.5 Windows | 未开始 |
 | D.6 跨语言 | 战略愿景，不排期 |
 
