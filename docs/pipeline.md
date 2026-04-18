@@ -128,3 +128,20 @@ Stage 3 纯 Zig，不碰 LLVM，不碰 Rust。这是 elf2sbpf 真正的领地。
 codegen 的工作，因为把 Zig 变成机器码本质上需要一个后端，而
 Zig 今天在 BPF target 上用的就是 LLVM。`zig cc` bridge 改变
 的不是消灭 LLVM，**是让 LLVM 不再是用户可见的依赖**。
+
+## 验证与脚本
+
+仓库当前的验证入口：
+
+- `./scripts/validate-zig.sh`：批量或按 example 跑 shim-vs-zig 对拍
+- `./scripts/validate-all.sh`：同一验证脚本的主实现，可接受 example 参数
+- `./scripts/compare.sh`：比较参考路径产物的 ELF 结构
+- `scripts/README.md`：脚本说明与前置依赖
+
+常用命令：
+
+```bash
+./scripts/validate-zig.sh
+./scripts/validate-zig.sh hello
+./scripts/validate-all.sh hello counter
+```

@@ -1,7 +1,7 @@
 # elf2sbpf — 产品需求文档（PRD）
 
-**状态**：C0 完成，准备进入 C1
-**最后更新**：2026-04-17
+**状态**：C1 进行中
+**最后更新**：2026-04-18
 
 ---
 
@@ -212,15 +212,17 @@ zig cc（被调用，不是被链接）
 
 ### In Scope（C1 MVP）
 
-- ✅ 把 sbpf-linker 的 stage 2 逻辑完整 port 到 Zig
-- ✅ SbpfArch V0 支持
-- ✅ `.text` + `.rodata` section（包括 Zig / clang 产出的多字符串
+下面列的是 **C1 目标范围**，不是当前完成度勾选：
+
+- 把 sbpf-linker 的 stage 2 逻辑完整 port 到 Zig
+- SbpfArch V0 支持
+- `.text` + `.rodata` section（包括 Zig / clang 产出的多字符串
   `.rodata.str1.1`）
-- ✅ `lddw` + `call` relocation 的重写
-- ✅ 改进版 rodata gap-fill 算法（已在 shim 验证）
-- ✅ Syscall murmur3-32 哈希注入
-- ✅ CLI 工具（`elf2sbpf input.o output.so`）
-- ✅ zignocchio 9/9 example 跟 shim 字节一致
+- `lddw` + `call` relocation 的重写
+- 改进版 rodata gap-fill 算法（已在 shim 验证设计）
+- Syscall murmur3-32 哈希注入
+- CLI 工具（`elf2sbpf input.o output.so`）
+- zignocchio 9/9 example 跟 shim 字节一致（作为 C1 验收标准）
 
 ### Out of Scope（推迟到 C2 或 D 阶段）
 
@@ -328,7 +330,7 @@ elf2sbpf/
 │       └── integration/
 ├── fixtures/               （保留）共享测试样本
 ├── docs/                   （保留）本 PRD + 相关文档
-├── reference-shim/         （保留）Rust oracle，C1 完成后删
+├── reference-shim/         （保留）Rust oracle，C1 完成后保留，C2 可选删除
 └── scripts/                （保留）对拍脚本 + 自动化
 ```
 

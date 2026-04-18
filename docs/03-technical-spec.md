@@ -40,7 +40,7 @@ elf2sbpf <input.o> <output.so>
 | 1 | 参数错误（数量不对、help） |
 | 2 | 输入文件读取失败 |
 | 3 | ELF 解析失败 |
-| 4 | byteparser 错误（见 ParseError） |
+| 4 | link 处理错误（byteparser / AST / emit 前置检查失败） |
 | 5 | 输出写入失败 |
 
 ### 1.2 库入口（`lib.zig` 暴露）
@@ -73,6 +73,7 @@ pub const LinkError = error{
 
     // byteparser
     InstructionDecodeFailed,     // 未知 opcode / lddw 长度不足
+    TextSectionMisaligned,       // `.text` 尾部不是完整 8/16-byte 指令
     LddwTargetOutsideRodata,     // lddw relocation 目标不在 rodata
     LddwTargetInsideNamedEntry,  // addend 落在命名符号内部（compiler bug？）
     CallTargetUnresolvable,      // call relocation 目标找不到
@@ -1012,7 +1013,7 @@ Section offset（每个 section 在文件中的起始 offset）在
 | 10 | lddw target 落在命名符号内部（e.address < t < e.address + e.size） | 返回错 | LddwTargetInsideNamedEntry |
 | 11 | lddw target addend ≥ ro_section.size | 返回错 | RodataSectionOverflow |
 | 12 | 未知 opcode（BPF 扩展里没有的字节） | 返回错 | InstructionDecodeFailed |
-| 13 | `.text` 字节数不是 8 的倍数 | 返回错（倒数第二条指令如果是 lddw，剩 8 字节不够） | InstructionDecodeFailed |
+| 13 | `.text` 字节数不是 8 的倍数 | 返回错（倒数第二条指令如果是 lddw，剩 8 字节不够） | TextSectionMisaligned |
 | 14 | jump label 未定义 | 返回错 | UndefinedLabel |
 | 15 | call syscall 但名字在 murmur 表里不存在 | 接受（murmur hash 是 fallback，任何名字都能算） | ok（不检查白名单）|
 | 16 | `.text` 包含 JMP32 指令（opcode 0x16 等） | **返回错**（C1 不支持 V4 扩展） | InstructionDecodeFailed |

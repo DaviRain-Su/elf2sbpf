@@ -110,7 +110,7 @@ test "murmur3_32 handles all tail lengths (0, 1, 2, 3)" {
     // Empty string: body runs 0 times, tail runs 0 times, only finalization.
     // hash starts at 0, gets XORed with 0 (length), then avalanche.
     const empty_hash = murmur3_32("");
-    try std.testing.expect(empty_hash == 0 or empty_hash != 0); // just confirm no panic
+    try std.testing.expectEqual(@as(u32, 0), empty_hash);
 
     // 1-byte tail (body=0, tail=1)
     _ = murmur3_32("a");

@@ -33,5 +33,5 @@ cargo build --release
 
 ## 什么时候可以删
 
-当 elf2sbpf 对所有 zignocchio example 跟这个 shim 字节对等，
-这个目录就可以移除了。
+当 elf2sbpf 对所有 zignocchio example 跟这个 shim 字节对等后，
+这个目录仍建议在 C1 阶段继续保留作 oracle；到 C2 再决定是否移除。

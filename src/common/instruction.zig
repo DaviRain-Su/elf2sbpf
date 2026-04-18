@@ -24,9 +24,9 @@ pub const DecodeError = error{
 
 pub const EncodeError = error{
     BufferTooSmall,
-    UnresolvedLabel,    // imm or off still carries an Either.left — caller must
-                        // resolve it (via buildProgram) before encoding.
-    ImmOutOfRange,      // Number value doesn't fit the encoded field width
+    UnresolvedLabel, // imm or off still carries an Either.left — caller must
+    // resolve it (via buildProgram) before encoding.
+    ImmOutOfRange, // Number value doesn't fit the encoded field width
 };
 
 // --- little-endian write helpers ---
@@ -98,17 +98,28 @@ pub const Instruction = struct {
     pub fn isJump(self: Instruction) bool {
         return switch (self.opcode) {
             .Ja,
-            .JeqImm, .JeqReg,
-            .JgtImm, .JgtReg,
-            .JgeImm, .JgeReg,
-            .JltImm, .JltReg,
-            .JleImm, .JleReg,
-            .JsetImm, .JsetReg,
-            .JneImm, .JneReg,
-            .JsgtImm, .JsgtReg,
-            .JsgeImm, .JsgeReg,
-            .JsltImm, .JsltReg,
-            .JsleImm, .JsleReg,
+            .JeqImm,
+            .JeqReg,
+            .JgtImm,
+            .JgtReg,
+            .JgeImm,
+            .JgeReg,
+            .JltImm,
+            .JltReg,
+            .JleImm,
+            .JleReg,
+            .JsetImm,
+            .JsetReg,
+            .JneImm,
+            .JneReg,
+            .JsgtImm,
+            .JsgtReg,
+            .JsgeImm,
+            .JsgeReg,
+            .JsltImm,
+            .JsltReg,
+            .JsleImm,
+            .JsleReg,
             => true,
             else => false,
         };
@@ -127,8 +138,12 @@ pub const Instruction = struct {
     /// TODO(B.9): swap in the whitelist once syscalls.zig is ready.
     pub fn isSyscall(self: Instruction) bool {
         if (self.opcode != .Call) return false;
-        // V3 syscalls: src=0, imm=resolved hash (.right)
-        if (self.src != null and self.src.?.n == 0) return true;
+        if (self.src) |src| {
+            // Resolved syscall call: src=0, imm carries the murmur3 hash.
+            if (src.n == 0) return true;
+            // Non-zero src means ordinary call / callx-style encoding.
+            return false;
+        }
         const imm = self.imm orelse return false;
         return switch (imm) {
             .left => true,
@@ -486,17 +501,28 @@ test "Instruction.getSize: non-Lddw is 8" {
 test "Instruction.isJump: true for all Jxx opcodes" {
     const jump_opcodes = [_]Opcode{
         .Ja,
-        .JeqImm,    .JeqReg,
-        .JgtImm,    .JgtReg,
-        .JgeImm,    .JgeReg,
-        .JltImm,    .JltReg,
-        .JleImm,    .JleReg,
-        .JsetImm,   .JsetReg,
-        .JneImm,    .JneReg,
-        .JsgtImm,   .JsgtReg,
-        .JsgeImm,   .JsgeReg,
-        .JsltImm,   .JsltReg,
-        .JsleImm,   .JsleReg,
+        .JeqImm,
+        .JeqReg,
+        .JgtImm,
+        .JgtReg,
+        .JgeImm,
+        .JgeReg,
+        .JltImm,
+        .JltReg,
+        .JleImm,
+        .JleReg,
+        .JsetImm,
+        .JsetReg,
+        .JneImm,
+        .JneReg,
+        .JsgtImm,
+        .JsgtReg,
+        .JsgeImm,
+        .JsgeReg,
+        .JsltImm,
+        .JsltReg,
+        .JsleImm,
+        .JsleReg,
     };
     for (jump_opcodes) |op| {
         const inst = Instruction{
@@ -707,7 +733,10 @@ test "fromBytes rejects Lddw with < 16 bytes" {
 test "toBytes errors on undersized buffer" {
     const inst = Instruction{
         .opcode = .Exit,
-        .dst = null, .src = null, .off = null, .imm = null,
+        .dst = null,
+        .src = null,
+        .off = null,
+        .imm = null,
         .span = .{ .start = 0, .end = 8 },
     };
     var tiny: [7]u8 = undefined;
@@ -717,7 +746,9 @@ test "toBytes errors on undersized buffer" {
 test "toBytes errors on undersized buffer for Lddw (needs 16)" {
     const inst = Instruction{
         .opcode = .Lddw,
-        .dst = .{ .n = 1 }, .src = null, .off = null,
+        .dst = .{ .n = 1 },
+        .src = null,
+        .off = null,
         .imm = .{ .right = .{ .Int = 0 } },
         .span = .{ .start = 0, .end = 16 },
     };
@@ -728,7 +759,9 @@ test "toBytes errors on undersized buffer for Lddw (needs 16)" {
 test "toBytes errors on unresolved label in imm" {
     const inst = Instruction{
         .opcode = .Call,
-        .dst = null, .src = .{ .n = 0 }, .off = null,
+        .dst = null,
+        .src = .{ .n = 0 },
+        .off = null,
         .imm = .{ .left = "sol_log_" }, // unresolved!
         .span = .{ .start = 0, .end = 8 },
     };
@@ -739,7 +772,8 @@ test "toBytes errors on unresolved label in imm" {
 test "toBytes errors on unresolved label in off" {
     const inst = Instruction{
         .opcode = .JeqImm,
-        .dst = .{ .n = 1 }, .src = null,
+        .dst = .{ .n = 1 },
+        .src = null,
         .off = .{ .left = "target" }, // unresolved jump target
         .imm = .{ .right = .{ .Int = 0 } },
         .span = .{ .start = 0, .end = 8 },
@@ -751,7 +785,9 @@ test "toBytes errors on unresolved label in off" {
 test "toBytes errors when imm doesn't fit i32 (non-Lddw)" {
     const inst = Instruction{
         .opcode = .Add64Imm,
-        .dst = .{ .n = 0 }, .src = null, .off = null,
+        .dst = .{ .n = 0 },
+        .src = null,
+        .off = null,
         .imm = .{ .right = .{ .Int = (1 << 33) } }, // > i32 max
         .span = .{ .start = 0, .end = 8 },
     };

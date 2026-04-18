@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Extended C0 validation: run the bit-diff test across all zignocchio examples.
+# Validation runner for shim-vs-Zig comparisons.
 #
 # For each example:
 #   1. Produce baseline .so via bitcode + sbpf-linker
 #   2. Produce candidate .so via Zig .o + reference-shim
-#   3. cmp them
+#   3. Produce candidate .so via Zig .o + elf2sbpf
+#   4. cmp shim and Zig outputs
+#
+# Usage:
+#   ./scripts/validate-all.sh                  # run all examples
+#   ./scripts/validate-all.sh hello counter    # run selected examples
 #
 # Outputs a summary table:
 #   example | baseline | shim | zig | shim-vs-zig | bc-size | shim-size | zig-size
@@ -28,7 +33,11 @@ fi
 
 mkdir -p "${OUT_DIR}"
 
-EXAMPLES=(hello noop logonly counter vault transfer-sol pda-storage escrow token-vault)
+if [ "$#" -gt 0 ]; then
+  EXAMPLES=("$@")
+else
+  EXAMPLES=(hello noop logonly counter vault transfer-sol pda-storage escrow token-vault)
+fi
 
 if [ ! -x "${ZIG_BIN}" ]; then
   echo "[validate] building zig elf2sbpf..." >&2

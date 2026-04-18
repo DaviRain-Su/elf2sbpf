@@ -421,7 +421,7 @@ pub fn collectLddwTargets(
         // Pre-build symbol lookup for this relocation section's symtab.
         var sym_lookup = buildSymbolLookupAt(allocator, file, symtab_idx) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => continue,
+            error.SymbolIterFailed => return error.SymbolIterFailed,
         };
         defer sym_lookup.deinit(allocator);
 
@@ -974,17 +974,24 @@ fn findInstructionAtOffset(text_scan: *TextScan, target: u64) ?*DecodedInstructi
 /// Build a lookup table from the symbol table at the given section index.
 /// This respects each relocation section's `sh_link` binding instead of
 /// doing a global .symtab/.dynsym fallback.
+const BuildSymbolLookupError = error{
+    OutOfMemory,
+    SymbolIterFailed,
+};
+
 fn buildSymbolLookupAt(
     allocator: std.mem.Allocator,
     file: *const elf_mod.ElfFile,
     symtab_idx: u16,
-) !std.ArrayList(symbol_mod.Symbol) {
+) BuildSymbolLookupError!std.ArrayList(symbol_mod.Symbol) {
     var table: std.ArrayList(symbol_mod.Symbol) = .empty;
     errdefer table.deinit(allocator);
 
-    var sym_iter = try file.iterSymbolsAt(symtab_idx);
-    while (sym_iter.next() catch null) |s| {
-        // Ensure the table is large enough to index by s.index
+    var sym_iter = file.iterSymbolsAt(symtab_idx) catch return BuildSymbolLookupError.SymbolIterFailed;
+    while (true) {
+        const maybe_sym = sym_iter.next() catch return BuildSymbolLookupError.SymbolIterFailed;
+        const s = maybe_sym orelse break;
+        // Ensure the table is large enough to index by s.index.
         while (table.items.len <= s.index) {
             try table.append(allocator, undefined);
         }
@@ -1025,7 +1032,9 @@ pub fn rewriteRelocations(
     owned_names: *std.ArrayList([]const u8),
 ) RewriteError!void {
     var sec_it = file.iterSections();
-    while (sec_it.next() catch null) |rel_sec| {
+    while (true) {
+        const maybe_rel_sec = sec_it.next() catch return RewriteError.RelocationIterFailed;
+        const rel_sec = maybe_rel_sec orelse break;
         const kind = rel_sec.kind();
         if (kind != std.elf.SHT_REL and kind != std.elf.SHT_RELA) continue;
 
@@ -1044,7 +1053,7 @@ pub fn rewriteRelocations(
         // Pre-build symbol lookup for this relocation section's symtab.
         var sym_lookup = buildSymbolLookupAt(allocator, file, symtab_idx) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => continue,
+            error.SymbolIterFailed => return RewriteError.SymbolIterFailed,
         };
         defer sym_lookup.deinit(allocator);
 
@@ -1097,7 +1106,9 @@ pub fn rewriteRelocations(
 
                         var named_iter = file.iterSymbolsAt(symtab_idx) catch return RewriteError.SymbolIterFailed;
                         var found: ?[]const u8 = null;
-                        while (named_iter.next() catch null) |s| {
+                        while (true) {
+                            const maybe_named = named_iter.next() catch return RewriteError.SymbolIterFailed;
+                            const s = maybe_named orelse break;
                             const s_sec = s.sectionIndex() orelse continue;
                             if (s_sec == sym_sec and s.address() == current_addend and s.name.len > 0) {
                                 found = s.name;

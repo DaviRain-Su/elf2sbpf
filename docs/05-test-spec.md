@@ -227,9 +227,9 @@ test "byteparser matches shim output for hello.o" {
 }
 ```
 
-**需要产出**：shim 里加一个 `--dump-parse-result` flag，把
-ParseResult 序列化成 JSON（跟 Zig 的 JSON 序列化兼容格式）。这是
-**Phase 6 动手前**要先做的辅助工具。
+**说明**：shim 侧的 `--dump-parse-result` JSON 导出目前**还没实现**。
+在它落地之前，L2 以 Zig 侧结构测试和最终 `.so` 字节级对拍为主；
+如果后续补上该 flag，再恢复这里的 JSON 中间产物对拍。
 
 #### L1 边界条件测试
 
@@ -298,13 +298,13 @@ test "zig elf2sbpf matches shim output for all zignocchio examples" {
         const input_path = "tests/golden/" ++ ex ++ ".o";
         const expected_path = "tests/golden/" ++ ex ++ ".shim.so";
 
-        const input = try std.fs.cwd().readFileAlloc(testing.allocator, input_path, 10 * 1024 * 1024);
+        const input = try std.Io.Dir.cwd().readFileAlloc(testing.io, input_path, testing.allocator, .limited(10 * 1024 * 1024));
         defer testing.allocator.free(input);
 
         const actual = try linker.linkProgram(testing.allocator, input);
         defer testing.allocator.free(actual);
 
-        const expected = try std.fs.cwd().readFileAlloc(testing.allocator, expected_path, 10 * 1024 * 1024);
+        const expected = try std.Io.Dir.cwd().readFileAlloc(testing.io, expected_path, testing.allocator, .limited(10 * 1024 * 1024));
         defer testing.allocator.free(expected);
 
         try testing.expectEqualSlices(u8, expected, actual);
@@ -344,9 +344,9 @@ reference-shim/target/release/elf2sbpf-shim tests/golden/<name>.o tests/golden/<
 
 ### 5.3 `tests/golden/*.parse_result.json`（中间产物）
 
-**需要修改 shim**：给 `reference-shim` 加 `--dump-parse-result`
-flag，序列化 ParseResult 为 JSON（format 要跟 Zig 的 JSON
-serializer 兼容）。
+**当前状态**：`reference-shim` 还没有 `--dump-parse-result`。
+这部分 schema 先作为未来扩展草案保留；当前主验证路径仍是
+`validate-zig.sh` / `validate-all.sh` 的字节级 `.so` 对拍。
 
 **JSON schema**（简要）：
 
