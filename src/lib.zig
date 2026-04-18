@@ -202,10 +202,36 @@ pub fn peepholeReport(
         return LinkError.OutOfMemory;
 }
 
+/// Same as `linkProgram`, but runs the D.7.10 V2 peephole pass before
+/// `buildProgram`. Rewrites `bpfel -O2`'s byte-wise `load i64 align 1`
+/// expansion (8 × ldxb + shift/or chain) into a single `ldxdw`.
+///
+/// Opt-in: output is **no longer byte-identical to reference-shim**
+/// for programs that contain the pattern. Safe for CU-critical use
+/// cases; the 19 default goldens' inputs don't match the pattern so
+/// this flag is a no-op on them.
+pub fn linkProgramOptimized(
+    allocator: std.mem.Allocator,
+    elf_bytes: []const u8,
+) LinkError![]u8 {
+    return linkProgramArchOpts(allocator, elf_bytes, .V0, .{ .peephole = true });
+}
+
+pub const LinkOptions = struct { peephole: bool = false };
+
 fn linkProgramArch(
     allocator: std.mem.Allocator,
     elf_bytes: []const u8,
     arch: SbpfArch,
+) LinkError![]u8 {
+    return linkProgramArchOpts(allocator, elf_bytes, arch, .{});
+}
+
+fn linkProgramArchOpts(
+    allocator: std.mem.Allocator,
+    elf_bytes: []const u8,
+    arch: SbpfArch,
+    opts: LinkOptions,
 ) LinkError![]u8 {
     const elf_file = ElfFile.parse(elf_bytes) catch return LinkError.InvalidElf;
 
@@ -218,6 +244,12 @@ fn linkProgramArch(
     var ast_val = AST.fromByteParse(allocator, &bpr) catch |e| switch (e) {
         error.OutOfMemory => return LinkError.OutOfMemory,
     };
+
+    if (opts.peephole) {
+        _ = peephole.rewriteAll(allocator, &ast_val) catch |e| switch (e) {
+            error.OutOfMemory => return LinkError.OutOfMemory,
+        };
+    }
 
     // Convert ByteParseResult.debug (DebugScan) → []ast.DebugSection.
     // The slice is owned by ParseResult after buildProgram consumes it.

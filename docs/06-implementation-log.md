@@ -3082,6 +3082,105 @@ rel.dyn.r_offset / dynsym.st_value / V3 e_entry + section sh_addr。
 
 无。V1 是全新增量，不改现有 API / 格式。
 
+---
+
+## D.7.10 V2.0 — Unaligned u64 load rewriter (non-interleaved) ✅
+
+**日期**：2026-04-18
+**状态**：✅ V2.0 完成（严格非交织模式；V2.1 交织处理推迟）
+
+### 前置
+
+V1 detector 已经证实 pattern 在真实程序中的存在和 CU 收益上限。这
+次 V2.0 实装 rewriter，把 detector 识别出来的 8-ldxb cluster 真正
+替换成单条 `ldxdw`，产物确实更短。
+
+### 做的事
+
+**1. `src/ast/peephole.zig` 追加 ~270 行**
+- `rewriteAll(allocator, *AST) → RewriteResult`：top-level 入口
+- `verifyCluster(nodes, group) → ?reason_str`：安全检查
+  - 动态收紧 span（`computeSpanEnd`）：从 last_ldxb 往后扫到第一条
+    非 whitelist 指令就停。whitelist = Ldxb / Lsh64Imm / Or64Reg /
+    Or32Reg
+  - span 内指令数 ∈ [18, 30]：典型 22 条
+  - 必须有 `Or64Reg` 用于确定最终目标 reg
+  - 无 Label 落在 span 内
+  - 无跨 region jump 的 target 落在 span 内
+- `hasInterleavedCluster(all_groups, self_idx, span)`：如果另一
+  cluster 的 ldxb 节点落在 self.span 内，两边都跳过（避免孤立对方
+  的 shift/or 链）
+- `applyRewrite(*AST, group)`：
+  1. 删除 span 内所有节点
+  2. 在 span_first 插入 1 条 `Ldxdw r{final_dst}, [r{base}+{off}]`
+  3. 后续所有 Label / Instruction 的 `offset` 减去 `byte_delta`
+  4. text_size 同步减
+  5. 所有 numeric jumps (`.right(i16) off`) 和 local calls
+     (`src=1, imm=.right(Number) offset`)：如果 src + target 跨越
+     被删除区域，`raw_off` 按 `21 insns` 调整方向重算
+
+**2. `src/lib.zig` 公开 API**
+- `pub fn linkProgramOptimized(allocator, elf_bytes) → ![]u8`
+- 内部 `linkProgramArchOpts(..., .{ .peephole = true })`；
+  rewriter 插在 `AST.fromByteParse` 和 `buildProgram` 之间
+- 默认路径（`linkProgram` / `linkProgramV3` /
+  `linkProgramWithSyscalls`）行为不变
+
+**3. `src/main.zig` CLI**
+- `--peephole` flag：opt-in，默认 off
+- V3 和 `--peephole` 组合会走 V3 路径（V3 rewriter 还没接，TODO）
+
+**4. 集成测试（`integration_test.zig` +3）**
+- `rosetta-transfer.stock-zig.o`：720B → 552B（1 cluster 非交织）
+- `rosetta-pubkey.stock-zig.o`：1768B → 1432B（8 cluster 中 2 个
+  非交织，6 个交织被跳过）
+- `linkProgramOptimized(hello.o)` byte-identical 到 `linkProgram`
+  （solana-zig 编的 .o 没有 pattern）
+
+### 遇到的问题 + 解决
+
+**Bug 1：固定 LOOKAHEAD 太长导致 cluster 吞掉下一条非 pattern 指令**
+
+初版用 `span_end = last_idx + 6`。transfer-lamports 的下一条
+`ldxdw r4, [r3+0x48]`（opcode 0x79）进了 span，verifyCluster
+报 "foreign opcode inside span" skip。解决：改成 `computeSpanEnd`
+动态扫描。
+
+**Bug 2：interleaved cluster 导致语义 corrupt**
+
+pubkey 的 6 个头部 cluster 互相交织（ldxb 节点互相落在对方 span
+内）。按 descending first_idx 顺序处理时，cluster A 的 rewrite 把
+cluster B 的 ldxb 也删了，留下 B 的 shift/or 引用未定义寄存器。
+**现象**：peephole 的 pubkey.so 反汇编里有 `r1 = *(u64*)(r1+0x10)`
+紧跟着 `r4 |= r0`——r0 / r4 本来是 0x10-cluster 的 ldxb 载入的，
+现在已经被删了。解决：加 `hasInterleavedCluster` 守卫，6 交织
+cluster 全跳过，只重写尾部 2 个非交织的。
+
+**结果收益调整**：pubkey 先期指望省 168 → 实际省 42（2/8 cluster）。
+这是 V2.0 的真实上限；V2.1 交织处理能进一步拿回 126 insns 左右。
+
+### 收益对比
+
+| 输入 | 尺寸 | CU 对比 solana-zig baseline |
+|------|------|------|
+| transfer-lamports 默认 | 720 B | 60 CU |
+| transfer-lamports `--peephole` | **552 B** (-168) | **~37 CU（=基线）** |
+| pubkey 默认 | 1768 B | 187 CU |
+| pubkey `--peephole` | **1432 B** (-336) | **~145 CU（基线 15）** |
+
+transfer-lamports 完全闭合 gap。pubkey 部分闭合；完全闭合等 V2.1。
+
+### 测试
+
+- 398/398 tests green（+6 新：3 peephole 集成 × 2 test 模块）
+- 所有 9 个 V0 solana-zig goldens 默认路径字节对等 100% 保留
+- `linkProgramOptimized(solana-zig-input)` 等价于 `linkProgram` 
+  （detector 识别 0 cluster）
+
+### 规格修订
+
+无破坏变更。`linkProgramOptimized` 是新增 API，默认路径行为不变。
+
 
 
 

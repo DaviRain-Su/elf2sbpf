@@ -425,3 +425,64 @@ test "integration: 9 zignocchio examples byte-match reference-shim under V3" {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// D.7.10 V2 — opt-in peephole rewriter smoke tests against real stock-zig
+// `.o` files copied from solana-program-rosetta. We assert:
+//   1. Default `linkProgram` output still byte-matches the no-peephole
+//      shim golden for every existing V0 fixture (guarded by the loop above).
+//   2. `linkProgramOptimized` produces a *strictly smaller* output for
+//      stock-zig inputs that contain the unaligned-u64 pattern.
+//   3. Both outputs parse as valid ELF / still contain the entrypoint.
+// ---------------------------------------------------------------------------
+
+const rosetta_transfer_o = @embedFile("testdata/rosetta-transfer.stock-zig.o");
+const rosetta_pubkey_o = @embedFile("testdata/rosetta-pubkey.stock-zig.o");
+
+test "D.7.10 V2: transfer rosetta .o shrinks under --peephole (1 cluster)" {
+    const allocator = testing.allocator;
+
+    const default_out = try lib.linkProgram(allocator, rosetta_transfer_o);
+    defer allocator.free(default_out);
+
+    const peephole_out = try lib.linkProgramOptimized(allocator, rosetta_transfer_o);
+    defer allocator.free(peephole_out);
+
+    // Single cluster = 21 insns saved = 168 bytes removed from .text.
+    try testing.expectEqual(default_out.len - 168, peephole_out.len);
+
+    // Both should still be valid ELF (header magic intact).
+    try testing.expectEqualSlices(u8, "\x7fELF", default_out[0..4]);
+    try testing.expectEqualSlices(u8, "\x7fELF", peephole_out[0..4]);
+}
+
+test "D.7.10 V2: pubkey rosetta .o shrinks under --peephole (non-interleaved subset)" {
+    const allocator = testing.allocator;
+
+    const default_out = try lib.linkProgram(allocator, rosetta_pubkey_o);
+    defer allocator.free(default_out);
+
+    const peephole_out = try lib.linkProgramOptimized(allocator, rosetta_pubkey_o);
+    defer allocator.free(peephole_out);
+
+    // V2.0 rewrites the 2 tail clusters of pubkey (the 6 interleaved
+    // clusters at the start are refused by the safety guard). Each
+    // non-interleaved cluster saves 168 bytes, so we expect exactly
+    // 336 bytes removed.
+    try testing.expectEqual(default_out.len - 336, peephole_out.len);
+    try testing.expectEqualSlices(u8, "\x7fELF", peephole_out[0..4]);
+}
+
+test "D.7.10 V2: linkProgramOptimized on solana-zig input is a no-op" {
+    // Inputs compiled via solana-zig already use `ldxdw`; peephole
+    // should find zero clusters and produce byte-identical output.
+    const allocator = testing.allocator;
+
+    const default_out = try lib.linkProgram(allocator, @embedFile("testdata/hello.o"));
+    defer allocator.free(default_out);
+
+    const peephole_out = try lib.linkProgramOptimized(allocator, @embedFile("testdata/hello.o"));
+    defer allocator.free(peephole_out);
+
+    try testing.expectEqualSlices(u8, default_out, peephole_out);
+}

@@ -9,6 +9,7 @@ const ParsedArgs = union(enum) {
         input_path: []const u8,
         output_path: []const u8,
         arch: linker.SbpfArch,
+        peephole: bool,
     },
     report: struct {
         input_path: []const u8,
@@ -21,11 +22,13 @@ fn parseArgv(args: []const []const u8) UsageError!ParsedArgs {
     {
         return .help;
     }
-    // Accept [--v0|--v3|--peephole-report] anywhere among the positional
-    // args. `--peephole-report` takes one positional (input only); the
-    // run modes take two. Arch defaults to V0.
+    // Accept [--v0|--v3|--peephole|--peephole-report] anywhere among
+    // the positional args. `--peephole-report` takes one positional
+    // (input only); the run modes take two. Arch defaults to V0;
+    // `--peephole` is off by default (opt-in V2 rewriter).
     var arch: linker.SbpfArch = .V0;
     var report_mode = false;
+    var peephole = false;
     var positional: [2][]const u8 = .{ "", "" };
     var pos_idx: usize = 0;
     for (args[1..]) |arg| {
@@ -33,6 +36,8 @@ fn parseArgv(args: []const []const u8) UsageError!ParsedArgs {
             arch = .V0;
         } else if (std.mem.eql(u8, arg, "--v3")) {
             arch = .V3;
+        } else if (std.mem.eql(u8, arg, "--peephole")) {
+            peephole = true;
         } else if (std.mem.eql(u8, arg, "--peephole-report")) {
             report_mode = true;
         } else if (pos_idx < 2) {
@@ -51,12 +56,13 @@ fn parseArgv(args: []const []const u8) UsageError!ParsedArgs {
         .input_path = positional[0],
         .output_path = positional[1],
         .arch = arch,
+        .peephole = peephole,
     } };
 }
 
 fn printUsage(writer: anytype) !void {
     try writer.writeAll(
-        \\Usage: elf2sbpf [--v0|--v3] <input.o> <output.so>
+        \\Usage: elf2sbpf [--v0|--v3] [--peephole] <input.o> <output.so>
         \\       elf2sbpf --peephole-report <input.o>
         \\
     );
@@ -106,9 +112,15 @@ fn runCli(
             const elf_bytes = cwd.readFileAlloc(io, run.input_path, allocator, .limited(std.math.maxInt(usize))) catch return .read_error;
             defer allocator.free(elf_bytes);
 
-            const out = switch (run.arch) {
-                .V0 => linker.linkProgram(allocator, elf_bytes),
-                .V3 => linker.linkProgramV3(allocator, elf_bytes),
+            const out = blk: {
+                if (run.peephole) {
+                    if (run.arch == .V3) break :blk linker.linkProgramV3(allocator, elf_bytes);
+                    break :blk linker.linkProgramOptimized(allocator, elf_bytes);
+                }
+                break :blk switch (run.arch) {
+                    .V0 => linker.linkProgram(allocator, elf_bytes),
+                    .V3 => linker.linkProgramV3(allocator, elf_bytes),
+                };
             } catch |err| return .{ .link_error = err };
             defer allocator.free(out);
 

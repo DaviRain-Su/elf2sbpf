@@ -275,34 +275,53 @@ gap 基本都来自这里。
 - 关键 safety：locality guard（同 base、连续 offsets、但跨 40+ 条
   指令的 scatter 载入不算）防止跨 BB 误匹配
 
-**V2 rewriter（未开工）— 非 trivial 编译器 pass**：
+**V2.0 rewriter（已完成，2026-04-18）—— 严格非交织模式**：
 
-删除指令 → 所有后续 offset 变化 → 要同步修正：
-1. `Jxxx/Ja` 的 `off`（相对 PC+1 的跳转距离）
-2. `Call` 的 `imm`（本地 call 是相对指令数）
-3. `.rel.dyn` 每条的 `r_offset`（byte offset in .text）
-4. `dynsym` 里 function 的 `st_value`
-5. V3 static layout 的 `e_entry` 和 section sh_addr
+- `src/ast/peephole.zig` 新增 `rewriteAll(allocator, *AST)`：扫出
+  cluster → verifyCluster 安全检查 → applyRewrite 删 22 条换 1 条
+- `lib.zig` 加 `linkProgramOptimized(allocator, elf_bytes)` 公开 API
+- CLI `elf2sbpf --peephole <input.o> <output.so>` 默认 off，opt-in
+- 全局 jump/call 偏移自适应：`anyJumpTargetsInside` 拒绝有 jump
+  目标落在被删除区域内的 cluster；保留 jump 的 raw `off` 如果跨越
+  删除区则按 `21 insns` 重新计算
 
-另外还要加：
-- register 活跃性分析（中间 shift 寄存器必须在 pattern 外没用）
-- shift/or 链完整性验证（不能只 match ldxb，shift consts 必须是
-  0/8/16/24/32/40/48/56 按顺序贡献到同一目标 reg）
-- cross-pattern interleaving 处理（多个 u64 load 的 ldxb 可能交
-  织）
+**V2.0 安全约束**（conservative）：
+- Span 动态收紧：从 last_ldxb 往后扫到第一条非 whitelist 指令就
+  停（whitelist = Ldxb / Lsh64Imm / Or64Reg / Or32Reg）
+- `instructions_in_span ∈ [18, 30]`：典型 pattern 22 条；区间外
+  说明有异常指令塞进去
+- 必须有 `Or64Reg` 确定最终目标 reg
+- 跨越 del-range 的 jump target = unsafe，跳过
+- **cluster 交织检查（`hasInterleavedCluster`）**：如果某 cluster
+  的 span 里包含 *别的 cluster* 的 ldxb 节点，两个都不 rewrite
+  —— 避免孤立掉其他 cluster 的 shift/or 链
 
-估计 3-5 个工作日 + 大量测试。上线策略：
-- **opt-in flag**（`--peephole` / `linkProgramOptimized`），默认关
-- 现有 19 个 goldens 走默认路径不受影响（byte-diff 保留）
-- 新增独立测试 `peephole-goldens/`：stock-zig 编的 `.o` → elf2sbpf
-  `--peephole` `.so` → litesvm 跑通 + CU 对比 solana-zig 目标值
+**实测结果**：
+- `rosetta-transfer.stock-zig.o`：1 cluster 非交织 → 720B → 552B
+  （-168B / -21 insns），对应 gap 23 CU 完全收回
+- `rosetta-pubkey.stock-zig.o`：8 cluster，6 交织 + 2 非交织 →
+  1768B → 1432B（-336B / -42 insns），CU 估计 187 → 145
+- 9 个 solana-zig 编的 V0 goldens：默认路径字节对等 100% 保留
 
-**先不做 V2 的条件**：
-- 除非有用户明确报 CU 问题，不排期
-- 优先做 D.7.1 + D.7.3（收益稳定、实现简单、不 break byte-diff）
+**V2.1 未做（interleaved clusters）**：
+- pubkey 的前 6 个 cluster 互相交织（ldxb 节点互相落在对方 span
+  内）。V2.1 需要"多 cluster 联合重写"：先合并成"super-cluster"，
+  一次性把这个区域里的所有 ldxb/shift/or 全删掉，插入 N 条 ldxdw
+- 技术难点：super-cluster 里每个 ldxdw 的最终目标 reg 需要做 SSA
+  -like 数据流追踪确定；不能再用"最后一个 Or64Reg 的 dst"的简单
+  heuristic
+- 估计 2-3 天；等 pubkey-style gap（12.5×）被用户真正关心时再做
+
+**集成测试**（`integration_test.zig`）：
+1. `linkProgramOptimized(rosetta-transfer.stock-zig.o)` = -168B ✓
+2. `linkProgramOptimized(rosetta-pubkey.stock-zig.o)` = -336B ✓
+3. `linkProgramOptimized(hello.o solana-zig)` = no-op, byte-identical
+   到 `linkProgram` ✓
+
+**不做的（明确）**：
 - 如果 Zig 上游把 `.solana` feature 加到 `bpfel` target（patch
-  LLVM，让 `load i64 align 1` 合法），V2 就可以直接砍掉——codegen
-  层免费拿回这个 gap
+  LLVM，让 `load i64 align 1` 合法），V2.x 就可以砍掉——codegen 层
+  免费拿回这个 gap
 
 ### 先做哪个？
 
@@ -353,7 +372,7 @@ gap 基本都来自这里。
 | D.4 Zig 库 API | ✅ 完成，v0.3.0 已发 |
 | D.5 Windows | 未开始（等用户报需求） |
 | D.6 跨语言前端 | 战略愿景，不排期 |
-| **D.7 字节码层优化** | 路线图就位，V1 detector（D.7.10）已落，V2 rewriter 未排期 |
+| **D.7 字节码层优化** | 路线图就位，D.7.10 V1 detector + V2.0 rewriter（非交织）已落，V2.1 交织版本未排期 |
 
 ---
 
