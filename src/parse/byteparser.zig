@@ -61,6 +61,10 @@ pub const RodataEntry = struct {
 /// entries before AST construction proper.
 pub const TextLabel = struct {
     name: []const u8,
+    /// Whether `name` is owned (true) or borrowed (false). Set by the
+    /// producer so deinit knows whether to free. D.2 entries are always
+    /// borrowed (the symbol's strtab slice); future passes may allocate.
+    name_owned: bool = false,
     /// Offset within the **merged** text image (section_base + symbol address).
     offset: u64,
 };
@@ -80,6 +84,10 @@ pub const SymbolScan = struct {
             if (e.name_owned) self.allocator.free(e.name);
         }
         self.pending_rodata.deinit(self.allocator);
+        // Free any owned text label names.
+        for (self.text_labels.items) |e| {
+            if (e.name_owned) self.allocator.free(e.name);
+        }
         self.text_labels.deinit(self.allocator);
     }
 };
@@ -220,7 +228,12 @@ pub fn scanSymbols(
     }
 
     var text_labels: std.ArrayList(TextLabel) = .empty;
-    errdefer text_labels.deinit(allocator);
+    errdefer {
+        for (text_labels.items) |e| {
+            if (e.name_owned) allocator.free(e.name);
+        }
+        text_labels.deinit(allocator);
+    }
 
     var entry_label: ?[]const u8 = null;
 
