@@ -2010,6 +2010,99 @@ emit 时再 copy。Zig 这里同样沿用借用切片：所有权由 `ParseResul
 `Program::emitBytecode` 将用这个 union 来统一迭代、放 section header
 表和计算 `e_shnum` / `sh_offset`。
 
+---
+
+## F.12 — SectionType union dispatch（Epic F 收官）
+
+**日期**：2026-04-18
+**commit**：待推送
+**耗时**：约 40min
+
+### 做了什么
+
+1. **加 `SectionType` union**（~90 行）
+
+   ```zig
+   pub const SectionType = union(enum) {
+       null_, shstrtab, code, data, dynsym,
+       dynstr, dynamic, reldyn, debug: DebugSection,
+       // ... 9 variants
+   };
+   ```
+
+   统一接口：`name()` / `size()` / `setOffset()` / `setNameOffset()` /
+   `bytecode()` / `sectionHeaderBytecode()`。每个方法 switch 到具体
+   variant。
+
+2. **顺带重构 CodeSection / DataSection**
+
+   原本 `sectionHeaderBytecode(name_offset, out)` 把 name_offset 作
+   参数传入；其他 7 种 section 都把 `name_offset` 存在结构体字段里。
+   为了 union 的统一接口，把 CodeSection/DataSection 也改成字段存储
+   （默认 0）+ `setNameOffset` setter，sectionHeaderBytecode 只剩
+   `(self, out)` 一个参数。
+
+   同步更新两个老测试：创建 section 时用 `.name_offset = N` 字段赋
+   值，`cs.sectionHeaderBytecode(&out)` 不再传 name_offset。
+
+### 关键设计：NullSection 的 setOffset 是 no-op
+
+`SectionType.setOffset(*SectionType, u64)` 对 `.null_` 分支直接
+`{}`。NullSection 永远在 `offset=0`，没有可变字段；硬塞 `setOffset`
+会破坏其不可变语义。union 容忍这个差异，调用方不需要跳过 Null。
+
+### 关键设计：为什么不用 vtable？
+
+Zig 0.16 没有 trait。方案选择：
+
+- **方案 A**：`*const fn (self, ...) -> ...` 函数指针表
+  （运行时 vtable）—— 灵活但编译期丢信息、每次调用多一次间接
+- **方案 B（采纳）**：`union(enum)` + inline switch —— 零运行时开销，
+  编译期全展开，变体新增时 exhaustiveness check 强制更新所有方法
+
+Epic G 的 `Program::emitBytecode` 会有一个 `[]SectionType` 列表，
+这里 inline dispatch 比 vtable 快且更符合 Zig 习惯。
+
+### 新增测试（5 个）
+
+- `SectionType: dispatches name/size through each variant`
+- `SectionType: setOffset propagates to the inner variant`（Null 不
+  panic；Code 真的写进去）
+- `SectionType: setNameOffset propagates to the inner variant`
+- `SectionType: bytecode matches the concrete variant`
+- `SectionType: sectionHeaderBytecode threads name_offset through the variant`
+
+### 验收
+
+- 332/332 tests 全绿（lib 163 + exe 169，新增 5 × 2 = 10 tests）
+- Epic F 12/12 完成（100%）；C1 总进度 43/56（77%）
+- section_types.zig 从 ~1050 → ~1200 行
+
+### Epic F 小结
+
+F.1-F.12 覆盖了 Solana SBPF .so 所有 section 的写入逻辑：
+- **F.1-F.3**：ELF header / program header / generic section header
+- **F.4**：NullSection + ShStrTabSection
+- **F.5-F.6**：CodeSection + DataSection
+- **F.7-F.10**：DynSymSection / DynStrSection / DynamicSection / RelDynSection
+- **F.11**：DebugSection
+- **F.12**：SectionType union 分派
+
+所有 section 的 `bytecode()` 和 `sectionHeaderBytecode()` 都通过了
+byte-level 单测。Epic G 可以直接组装成 `Program` 并串出 .so 字节流。
+
+### 下一任务
+
+**Epic G — Program emit**（G.1-G.4）：
+- `G.1`：`emit/program.zig` 的 `Program` 结构体（持有所有
+  `SectionType` 实例 + 全局 offset 分配逻辑）
+- `G.2`：`Program::fromParseResult(ParseResult, SbpfArch)` —
+  主构造函数，把 byteparser 的输出翻译成 emit 层的 sections
+- `G.3`：layout 阶段 —— 给每个 section 计算 offset（shstrtab 用
+  name collect；dynsym 先构建 strtab 再 back-reference）
+- `G.4`：`Program::emitBytecode([]u8)` —— 把所有 section bytecode
+  串成最终的 .so 文件，跟 reference-shim 字节等价
+
 
 
 

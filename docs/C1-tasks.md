@@ -462,11 +462,15 @@ Solana SBPF 特有结构。
   - SHT_PROGBITS + flags=0（不可加载）、`sh_addr=0`、`sh_addralign=1`
   - **验收**：3 单测（非空 payload 透传、空 payload、header 字段）
 
-- [ ] **F.12**：`emit/section_types.zig` — SectionType 分派
-  - `union(enum) SectionType { Null, Code, Data, ... }`
-  - 每个变体有 `name()` / `bytecode()` / `sectionHeaderBytecode()`
-    / `size()` 方法
-  - **验收**：对 hello 的全部 section 能统一迭代
+- [x] **F.12**：`emit/section_types.zig` — SectionType 分派 ✅ 2026-04-18
+  - `SectionType = union(enum) { null_, shstrtab, code, data, dynsym,
+    dynstr, dynamic, reldyn, debug }`
+  - 统一接口：`name()` / `size()` / `setOffset()` / `setNameOffset()` /
+    `bytecode()` / `sectionHeaderBytecode()`
+  - 顺带重构：CodeSection/DataSection 把 `name_offset` 从方法参数
+    搬到结构体字段，对齐其他 7 种 section；测试同步更新
+  - **验收**：5 新单测（name/size 分派、setOffset/Name 传参、bytecode
+    一致、sectionHeaderBytecode 透传 name_offset）
 
 ---
 
@@ -585,11 +589,11 @@ Solana SBPF 特有结构。
 | C — ELF 读取层 | 5 | 5 | ✅ 完成 |
 | D — Byteparser | 9 | 9 | ✅ 完成 |
 | E — AST | 4 | 4 | ✅ 完成 |
-| F — ELF 输出层 | 12 | 11 | 进行中 (92%) |
+| F — ELF 输出层 | 12 | 12 | ✅ 完成 |
 | G — Program emit | 4 | 0 | 未开始 |
 | H — CLI | 3 | 2 | 进行中（入口/错误处理已完成；主流程验收待 Epic G） |
 | I — 对拍测试 | 6 | 0 | 未开始 |
-| **总计** | **56** | **42** | **75%** |
+| **总计** | **56** | **43** | **77%** |
 
 \* B.4 推迟到 D；本 Epic 实际工作量少 1 个。
 

@@ -166,6 +166,8 @@ pub const CodeSection = struct {
     /// Total emitted size = sum of Instruction.getSize() for each
     /// Instruction node in `nodes`. Provided by caller (from AST.text_size).
     size: u64,
+    /// Offset of the name string inside the shstrtab.
+    name_offset: u32 = 0,
     /// Offset into the output file. Set by Program::fromParseResult
     /// during layout.
     offset: u64 = 0,
@@ -177,6 +179,10 @@ pub const CodeSection = struct {
 
     pub fn setOffset(self: *CodeSection, o: u64) void {
         self.offset = o;
+    }
+
+    pub fn setNameOffset(self: *CodeSection, o: u32) void {
+        self.name_offset = o;
     }
 
     /// Serialize all Instruction nodes back to bytes via
@@ -216,14 +222,10 @@ pub const CodeSection = struct {
     }
 
     /// 64-byte section header: PROGBITS + ALLOC|EXECINSTR, align 4.
-    pub fn sectionHeaderBytecode(
-        self: CodeSection,
-        name_offset: u32,
-        out: *[64]u8,
-    ) void {
+    pub fn sectionHeaderBytecode(self: CodeSection, out: *[64]u8) void {
         const flags = header_mod.SHF_ALLOC | header_mod.SHF_EXECINSTR;
         const sh = SectionHeader.init(
-            name_offset,
+            self.name_offset,
             header_mod.SHT_PROGBITS,
             flags,
             self.offset,
@@ -247,6 +249,7 @@ pub const CodeSection = struct {
 pub const DataSection = struct {
     nodes: []const ASTNode,
     size: u64,
+    name_offset: u32 = 0,
     offset: u64 = 0,
 
     pub fn name(self: DataSection) []const u8 {
@@ -256,6 +259,10 @@ pub const DataSection = struct {
 
     pub fn setOffset(self: *DataSection, o: u64) void {
         self.offset = o;
+    }
+
+    pub fn setNameOffset(self: *DataSection, o: u32) void {
+        self.name_offset = o;
     }
 
     /// Content size rounded up to 8-byte boundary. The raw size field
@@ -288,13 +295,9 @@ pub const DataSection = struct {
         return buf;
     }
 
-    pub fn sectionHeaderBytecode(
-        self: DataSection,
-        name_offset: u32,
-        out: *[64]u8,
-    ) void {
+    pub fn sectionHeaderBytecode(self: DataSection, out: *[64]u8) void {
         const sh = SectionHeader.init(
-            name_offset,
+            self.name_offset,
             header_mod.SHT_PROGBITS,
             header_mod.SHF_ALLOC,
             self.offset,
@@ -682,6 +685,112 @@ pub const DebugSection = struct {
 };
 
 // ---------------------------------------------------------------------------
+// SectionType — tagged union over the 9 concrete section writers.
+//
+// Lets `Program::emitBytecode` iterate a heterogeneous list of sections
+// without type-dispatching at every call site. Every variant exposes the
+// same shape: `name() / size() / setOffset() / bytecode() /
+// sectionHeaderBytecode()`. NullSection has no offset (it's always 0) — the
+// union's setOffset tolerates that by no-oping for Null.
+// ---------------------------------------------------------------------------
+
+pub const SectionType = union(enum) {
+    null_: NullSection,
+    shstrtab: ShStrTabSection,
+    code: CodeSection,
+    data: DataSection,
+    dynsym: DynSymSection,
+    dynstr: DynStrSection,
+    dynamic: DynamicSection,
+    reldyn: RelDynSection,
+    debug: DebugSection,
+
+    pub fn name(self: SectionType) []const u8 {
+        return switch (self) {
+            .null_ => "",
+            .shstrtab => |s| s.name(),
+            .code => |s| s.name(),
+            .data => |s| s.name(),
+            .dynsym => |s| s.name(),
+            .dynstr => |s| s.name(),
+            .dynamic => |s| s.name(),
+            .reldyn => |s| s.name(),
+            .debug => |s| s.name(),
+        };
+    }
+
+    pub fn size(self: SectionType) u64 {
+        return switch (self) {
+            .null_ => |s| s.size(),
+            .shstrtab => |s| s.size(),
+            .code => |s| s.size,
+            .data => |s| s.size,
+            .dynsym => |s| s.size(),
+            .dynstr => |s| s.size(),
+            .dynamic => |s| s.size(),
+            .reldyn => |s| s.size(),
+            .debug => |s| s.size(),
+        };
+    }
+
+    pub fn setOffset(self: *SectionType, o: u64) void {
+        switch (self.*) {
+            .null_ => {}, // NullSection has no offset field.
+            .shstrtab => |*s| s.setOffset(o),
+            .code => |*s| s.setOffset(o),
+            .data => |*s| s.setOffset(o),
+            .dynsym => |*s| s.setOffset(o),
+            .dynstr => |*s| s.setOffset(o),
+            .dynamic => |*s| s.setOffset(o),
+            .reldyn => |*s| s.setOffset(o),
+            .debug => |*s| s.setOffset(o),
+        }
+    }
+
+    pub fn bytecode(self: SectionType, allocator: std.mem.Allocator) ![]u8 {
+        return switch (self) {
+            .null_ => |s| s.bytecode(allocator),
+            .shstrtab => |s| s.bytecode(allocator),
+            .code => |s| s.bytecode(allocator),
+            .data => |s| s.bytecode(allocator),
+            .dynsym => |s| s.bytecode(allocator),
+            .dynstr => |s| s.bytecode(allocator),
+            .dynamic => |s| s.bytecode(allocator),
+            .reldyn => |s| s.bytecode(allocator),
+            .debug => |s| s.bytecode(allocator),
+        };
+    }
+
+    pub fn sectionHeaderBytecode(self: SectionType, out: *[64]u8) void {
+        switch (self) {
+            .null_ => |s| s.sectionHeaderBytecode(out),
+            .shstrtab => |s| s.sectionHeaderBytecode(out),
+            .code => |s| s.sectionHeaderBytecode(out),
+            .data => |s| s.sectionHeaderBytecode(out),
+            .dynsym => |s| s.sectionHeaderBytecode(out),
+            .dynstr => |s| s.sectionHeaderBytecode(out),
+            .dynamic => |s| s.sectionHeaderBytecode(out),
+            .reldyn => |s| s.sectionHeaderBytecode(out),
+            .debug => |s| s.sectionHeaderBytecode(out),
+        }
+    }
+
+    pub fn setNameOffset(self: *SectionType, o: u32) void {
+        switch (self.*) {
+            .null_ => {},
+            .shstrtab => |*s| s.name_offset = o,
+            .code => |*s| s.setNameOffset(o),
+            .data => |*s| s.setNameOffset(o),
+            .dynsym => |*s| s.name_offset = o,
+            .dynstr => |*s| s.name_offset = o,
+            .dynamic => |*s| s.name_offset = o,
+            .reldyn => |*s| s.name_offset = o,
+            .debug => |*s| s.name_offset = o,
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -835,10 +944,11 @@ test "CodeSection: section header uses PROGBITS + ALLOC|EXECINSTR, align 4" {
     const cs = CodeSection{
         .nodes = &.{},
         .size = 0x40,
+        .name_offset = 1,
         .offset = 0xe8,
     };
     var out: [64]u8 = undefined;
-    cs.sectionHeaderBytecode(1, &out);
+    cs.sectionHeaderBytecode(&out);
 
     try testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, out[0..4], .little)); // sh_name
     try testing.expectEqual(@as(u32, header_mod.SHT_PROGBITS), std.mem.readInt(u32, out[4..8], .little));
@@ -891,10 +1001,11 @@ test "DataSection: section header uses PROGBITS + ALLOC, unpadded sh_size" {
     const ds = DataSection{
         .nodes = &.{},
         .size = 5, // logical content size
+        .name_offset = 7,
         .offset = 0x128,
     };
     var out: [64]u8 = undefined;
-    ds.sectionHeaderBytecode(7, &out);
+    ds.sectionHeaderBytecode(&out);
 
     try testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, out[0..4], .little)); // sh_name
     try testing.expectEqual(header_mod.SHF_ALLOC, std.mem.readInt(u64, out[8..16], .little));
@@ -1093,4 +1204,87 @@ test "DebugSection: header uses SHT_PROGBITS with zero flags and align 1" {
     try testing.expectEqual(@as(u64, 3), std.mem.readInt(u64, out[32..40], .little));
     // sh_addralign
     try testing.expectEqual(@as(u64, 1), std.mem.readInt(u64, out[48..56], .little));
+}
+
+test "SectionType: dispatches name/size through each variant" {
+    const ns: SectionType = .{ .null_ = NullSection.init() };
+    try testing.expectEqualStrings("", ns.name());
+    try testing.expectEqual(@as(u64, 0), ns.size());
+
+    const names = [_][]const u8{".text"};
+    const sh: SectionType = .{ .shstrtab = ShStrTabSection{
+        .name_offset = 7,
+        .section_names = &names,
+    } };
+    try testing.expectEqualStrings(".s", sh.name());
+
+    const cs: SectionType = .{ .code = CodeSection{ .nodes = &.{}, .size = 0x40 } };
+    try testing.expectEqualStrings(".text", cs.name());
+    try testing.expectEqual(@as(u64, 0x40), cs.size());
+
+    const ds: SectionType = .{ .data = DataSection{ .nodes = &.{}, .size = 5 } };
+    try testing.expectEqualStrings(".rodata", ds.name());
+    try testing.expectEqual(@as(u64, 5), ds.size());
+
+    const debug_payload = [_]u8{ 1, 2, 3, 4 };
+    const dbg: SectionType = .{ .debug = DebugSection{
+        .section_name = ".debug_info",
+        .name_offset = 0,
+        .data = &debug_payload,
+    } };
+    try testing.expectEqualStrings(".debug_info", dbg.name());
+    try testing.expectEqual(@as(u64, 4), dbg.size());
+}
+
+test "SectionType: setOffset propagates to the inner variant" {
+    var cs: SectionType = .{ .code = CodeSection{ .nodes = &.{}, .size = 0x10 } };
+    cs.setOffset(0x200);
+    try testing.expectEqual(@as(u64, 0x200), cs.code.offset);
+
+    var ns: SectionType = .{ .null_ = NullSection.init() };
+    ns.setOffset(0xdead); // no-op — must not panic
+    try testing.expect(@as(std.meta.Tag(SectionType), ns) == .null_);
+}
+
+test "SectionType: setNameOffset propagates to the inner variant" {
+    var ds: SectionType = .{ .data = DataSection{ .nodes = &.{}, .size = 0x8 } };
+    ds.setNameOffset(42);
+    try testing.expectEqual(@as(u32, 42), ds.data.name_offset);
+
+    var dbg: SectionType = .{ .debug = DebugSection{
+        .section_name = ".debug_line",
+        .name_offset = 0,
+        .data = &[_]u8{},
+    } };
+    dbg.setNameOffset(99);
+    try testing.expectEqual(@as(u32, 99), dbg.debug.name_offset);
+}
+
+test "SectionType: bytecode matches the concrete variant" {
+    const cs_variant: SectionType = .{ .code = CodeSection{
+        .nodes = &.{},
+        .size = 0,
+    } };
+    const a = try cs_variant.bytecode(testing.allocator);
+    defer testing.allocator.free(a);
+    try testing.expectEqual(@as(usize, 0), a.len);
+
+    const ns: SectionType = .{ .null_ = NullSection.init() };
+    const b = try ns.bytecode(testing.allocator);
+    defer testing.allocator.free(b);
+    try testing.expectEqual(@as(usize, 0), b.len);
+}
+
+test "SectionType: sectionHeaderBytecode threads name_offset through the variant" {
+    var cs: SectionType = .{ .code = CodeSection{
+        .nodes = &.{},
+        .size = 0x40,
+        .offset = 0xe8,
+    } };
+    cs.setNameOffset(1);
+
+    var out: [64]u8 = undefined;
+    cs.sectionHeaderBytecode(&out);
+    try testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, out[0..4], .little));
+    try testing.expectEqual(@as(u32, header_mod.SHT_PROGBITS), std.mem.readInt(u32, out[4..8], .little));
 }
