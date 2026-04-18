@@ -33,15 +33,51 @@ v0.4（自定义 syscall registry）→ v0.5（V3 arch）。
 
 ## 安装 & 使用
 
+### 本地安装
+
 ```bash
-# 拉代码 & 构建（需要 Zig 0.16.0）
+# 需要 Zig 0.16.0
 git clone https://github.com/DaviRain-Su/elf2sbpf && cd elf2sbpf
 zig build -p ~/.local           # 装到 ~/.local/bin/elf2sbpf
 export PATH="$HOME/.local/bin:$PATH"
 
-# 用
-elf2sbpf input.o output.so
+# 验证
+elf2sbpf --help
 ```
+
+### CI / 一次性使用
+
+可以，`elf2sbpf` 在 CI 里可以正常用。最简单的方式就是在 job 里现编，
+然后直接调用 `zig-out/bin/elf2sbpf`：
+
+```bash
+# 在 CI 里
+zig build
+./zig-out/bin/elf2sbpf input.o output.so
+```
+
+GitHub Actions 示例：
+
+```yaml
+- uses: actions/checkout@v4
+
+- uses: mlugg/setup-zig@v2
+  with:
+    version: 0.16.0
+
+- name: Build elf2sbpf
+  run: zig build
+
+- name: Use elf2sbpf
+  run: ./zig-out/bin/elf2sbpf input.o output.so
+```
+
+如果别的仓库在 CI 里要用 `elf2sbpf`，有两种常见方式：
+
+1. checkout 本仓库后 `zig build`，再把 `zig-out/bin/elf2sbpf` 的绝对路径
+   传给调用方；或
+2. 用 `zig build -p <prefix>` 安装到某个前缀，再把 `<prefix>/bin` 加到
+   `PATH`。
 
 macOS arm64 + Linux x86_64 官方支持；其它平台理论可用（Zig 本身跨平台）
 但未测试。

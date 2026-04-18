@@ -32,15 +32,51 @@ For full background, see `docs/C0-findings.md`. For execution details, see
 
 ## Install & Use
 
+### Local install
+
 ```bash
-# Clone and build (requires Zig 0.16.0)
+# Requires Zig 0.16.0
 git clone https://github.com/DaviRain-Su/elf2sbpf && cd elf2sbpf
 zig build -p ~/.local           # installs to ~/.local/bin/elf2sbpf
 export PATH="$HOME/.local/bin:$PATH"
 
-# Use
-elf2sbpf input.o output.so
+# Verify
+elf2sbpf --help
 ```
+
+### CI / one-off use
+
+Yes — `elf2sbpf` works in CI. The simplest pattern is to build it inside the
+job and invoke the binary from `zig-out/bin/elf2sbpf`.
+
+```bash
+# inside CI
+zig build
+./zig-out/bin/elf2sbpf input.o output.so
+```
+
+Example GitHub Actions snippet:
+
+```yaml
+- uses: actions/checkout@v4
+
+- uses: mlugg/setup-zig@v2
+  with:
+    version: 0.16.0
+
+- name: Build elf2sbpf
+  run: zig build
+
+- name: Use elf2sbpf
+  run: ./zig-out/bin/elf2sbpf input.o output.so
+```
+
+If another repository needs `elf2sbpf` during CI, either:
+
+1. check out this repository and run `zig build`, then pass the absolute path to
+   `zig-out/bin/elf2sbpf`, or
+2. install it into a prefix with `zig build -p <prefix>` and add `<prefix>/bin`
+   to `PATH`.
 
 Officially supported on macOS arm64 and Linux x86_64. Other platforms should
 work in theory thanks to Zig's portability, but are untested.
