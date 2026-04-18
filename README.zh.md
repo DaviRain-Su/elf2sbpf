@@ -13,7 +13,7 @@
 C1 / C2 / D 阶段所有目标已交付：
 
 - `zig build` ✅
-- `zig build test --summary all` ✅（370/370 tests：单元 + V0 9-example sweep + V3 9-example sweep + debug-info + fuzz-lite）
+- `zig build test --summary all` ✅（378/378 tests：单元 + V0 9-example sweep + V3 9-example sweep + debug-info + fuzz-lite + adversarial-ELF）
 - `./scripts/validate-zig.sh` ✅（zignocchio 9/9 example 和 `reference-shim` MATCH）
 - GitHub Actions CI ✅（ubuntu-latest + macos-latest）
 - 库 API：`linkProgram` / `linkProgramV3` / `linkProgramWithSyscalls`；CLI 带
@@ -188,34 +188,52 @@ elf2sbpf **不是** Rust `sbpf-linker` 的 drop-in 替代品。
 - `github.com/blueshift-gg/sbpf-linker`（byteparser + CLI）
 - `github.com/blueshift-gg/sbpf`（common + assembler crates）
 
-`reference-shim/` 目录下有一个 Rust 参考 shim——它实现了同样的
-stage 2 逻辑，但不依赖 bpf-linker 也不依赖 libLLVM，在 C1 阶段
-作为 oracle 使用（Zig 港每个测试 case 的输出都必须跟 shim 输出
-`cmp` 相等）。
+`reference-shim/` 目录下有一个 Rust 参考 shim —— 实现了同样的
+stage 2 逻辑，但不依赖 `sbpf-linker` 也不依赖 libLLVM。它是
+**字节对等 oracle**：`src/testdata/` 下的所有 golden 都由 shim 产出，
+`scripts/validate-zig.sh` 把 elf2sbpf 新产物跟它做 `cmp`。shim 在
+v0.5.0 加了 `--v3` flag，给我们 V3 oracle 也有了。保留它在主干上
+的决定记录在 [ADR-002](docs/decisions.md)。
 
-## Scope（C1 MVP）
+## Scope
 
-**已完成：**
+**已支持（C1 + D 阶段，截至 v0.5.0）：**
 
-- ✅ SbpfArch V0
+- ✅ SbpfArch **V0**（动态链接 —— PT_DYNAMIC + dynsym / dynstr / rel.dyn）
+- ✅ SbpfArch **V3**（静态布局、固定 vaddr、无 PT_DYNAMIC —— 自 v0.5.0）
 - ✅ `.text` + `.rodata` sections，包括多字符串的 `.rodata.str1.1`
 - ✅ `lddw` 和 `call` relocation
 - ✅ 改进版 rodata gap-fill：在每个 `lddw` 目标偏移处切分 section，
   让 Zig/clang 默认产出的 `.rodata.str1.1` 在**没有具名字符串符号**时也能工作
-- ✅ zignocchio 9/9 example 经过 `zig cc` bridge 后，Zig 产物与
-  `reference-shim` 字节一致
+- ✅ `.debug_*` 保留（abbrev / info / line / line_str / str / frame / loc / ranges 白名单，跟 Rust 对齐 —— 自 v0.2.0）
+- ✅ 自定义 syscall 注册：`linkProgramWithSyscalls` 在 30 个内置 Solana
+  syscall 之外 threadlocal 叠加用户扩展表（自 v0.4.0）
+- ✅ Zig 库 API：`@import("elf2sbpf")` + `linkProgram` / `linkProgramV3` /
+  `linkProgramWithSyscalls`（自 v0.3.0）
+- ✅ 9 个 zignocchio example 在 **V0 和 V3** 两种 arch 下产物都跟
+  `reference-shim` byte-identical；另有一个 debug-info 固定件
 
-**明确推迟到后续：**
+**明确不做**：
 
-- ⏭️ SbpfArch V3
-- ⏭️ Debug info（`.debug_*`）保留
-- ⏭️ 动态 syscall 解析
+- ❌ 汇编文本 parser（`.sbpf` 源 → bytecode）—— 我们只接 ELF 输入
+- ❌ DWARF synthesis（从 `DebugData` 合成 debug section）—— 只做 reuse
+- ❌ 多 translation-unit LTO —— 委托给 `zig cc` / 上游编译器
+- ❌ BPF 字节码验证器 / VM 执行器 —— 我们是 linker 不是 runtime
+- ❌ LLVM 版本追踪 / 自定义 LLVM pass —— elf2sbpf 不链 libLLVM
+
+**等生态触发**：
+
+- ⏭️ Windows 支持（D.5）
+- ⏭️ 跨语言前端（D.6 战略愿景）
 
 ## 验证
 
-- 全量验证：`./scripts/validate-zig.sh`
-- 单个 example：`./scripts/validate-zig.sh hello`
-- 当前结果：`validate-zig.sh` 对 9/9 example 全绿
+- `zig build test` — 378/378 单元 + 集成测试（每次 CI push 跑）
+- `./scripts/validate-zig.sh` — 9/9 zignocchio example（需要本地
+  zignocchio checkout）；通过 shim 的 `--v0` / `--v3` flag 双 arch 覆盖
+- `./scripts/validate-zig.sh hello` — 单 example
+- `./scripts/fuzz/run.sh 100` — 随机回归 harness（基线 160/160 MATCH）；
+  改动 byteparser / emit 层的 PR 建议先跑一轮
 - 脚本说明：`scripts/README.md`
 
 ## License
