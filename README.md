@@ -44,7 +44,7 @@ Full installation guide: `docs/install.md`.
 
 ## Integrating into your Zig Solana project
 
-If you are already using [zignocchio](https://github.com/BretasArthur1/zignocchio)
+If you are already using [zignocchio](https://github.com/Solana-ZH/zignocchio)
 or a similar Zig-based Solana framework, you can copy
 `docs/integrations/zignocchio-build.zig` into your repository root (replacing
 your existing `build.zig`), then run:
