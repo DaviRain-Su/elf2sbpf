@@ -3463,3 +3463,68 @@ load + store 都做）；默认路径 / 其它公开 API 不变。
 
 
 
+
+---
+
+## D.7.10 Rollback — remove peephole entirely ✅
+
+**日期**：2026-04-19
+**状态**：✅ 完成。V1 detector + V2.0/V2.1/V2.2 rewriter 全删。
+
+### 为什么回退
+
+V2 rewriter 在 zignocchio escrow 触发 miscompile：3 个
+integration test 全挂，`Access violation at 0xfffffffffffffe98`。
+说明 taint-matching 对 stack-heavy 控制流 + 非标准 shift chain
+覆盖不全。
+
+用户观察到这让 elf2sbpf 显得"很不可用"，决定彻底回退而不是修复。
+理由：
+- 修复要做 register liveness 跨-BB 分析，工作量大且可能继续漏
+- 我们已经有 solana-zig fork（`solana-1.52-zig0.16`）能直接从
+  LLVM codegen 层拿到 baseline CU，peephole 已无产品意义
+- elf2sbpf 回归 "stock Zig → .so" 纯粹工具定位对用户更清楚
+
+### 删除的东西
+
+**代码**：
+- `src/ast/peephole.zig` 整个文件（~350 lines）
+- `lib.zig` 的 `peephole` re-export / `peepholeReport()` /
+  `linkProgramOptimized()` / `LinkOptions`
+- `main.zig` 的 `--peephole` / `--peephole-report` flag +
+  `.report` ParsedArgs variant + runCli report 分支
+- `integration_test.zig` 3 个 V1 detector 测试
+- 删除 20 个 peephole 单元测试
+
+**Fixture**：
+- `src/testdata/rosetta-transfer.stock-zig.o`
+- `src/testdata/rosetta-pubkey.stock-zig.o`
+
+**保留**（没事）：
+- 9 个 solana-zig V0 goldens（`*.o` + `*.shim.so`）
+- 9 个 V3 goldens（`*.v3.shim.so`）
+- mini-debug fixture
+
+### 结果
+
+- **378/378 tests pass**（原 398，减少 20 个 peephole 单元测试 +
+  3 个 integration）
+- **9 个 V0 goldens 仍字节对等 `reference-shim`**（默认路径未变）
+- CLI 只剩 `elf2sbpf [--v0|--v3] <in.o> <out.so>`（简洁）
+- 无 `--peephole*` 或 `linkProgramOptimized` 遗留
+
+### 历史（Git trail）
+
+- `8e44256` D.7.10 V1 detector
+- `e43112a` V2.0 rewriter
+- `f0a7211` V2.1 super-cluster
+- `dcfd316` V2.1a unify taint
+- `113788a` V2.2 store peephole
+- **this commit** Full rollback
+
+有任何未来"试试 peephole"的念头，先读 git history 避免踩同样的坑。
+
+### 规格修订
+
+- `docs/D-tasks.md` §D.7.10：状态改为"已回退"，保留历史细节作研究参考
+- `docs/D-tasks.md` §D.7 汇总行：peephole 条目删除线 + 指向 fork Zig

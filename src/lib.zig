@@ -54,8 +54,6 @@ pub const AST = ast.AST;
 pub const SbpfArch = ast.SbpfArch;
 pub const ParseResult = ast.ParseResult;
 
-pub const peephole = @import("ast/peephole.zig");
-
 const emit_header = @import("emit/header.zig");
 pub const ElfHeader = emit_header.ElfHeader;
 pub const ProgramHeader = emit_header.ProgramHeader;
@@ -92,7 +90,6 @@ test {
     _ = @import("parse/byteparser.zig");
     _ = @import("ast/node.zig");
     _ = @import("ast/ast.zig");
-    _ = @import("ast/peephole.zig");
     _ = @import("emit/header.zig");
     _ = @import("emit/section_types.zig");
     _ = @import("emit/program.zig");
@@ -178,61 +175,11 @@ pub fn linkProgramV3(
     return linkProgramArch(allocator, elf_bytes, .V3);
 }
 
-/// Scan a BPF ELF for peephole-eligible 8-byte-load clusters. Does not
-/// modify anything — this is D.7.10 V1 (detector only). Caller owns the
-/// returned `Report` and must free it via `report.deinit(allocator)`.
-///
-/// Intended use: CLI `--peephole-report` flag / external tooling that
-/// wants to estimate CU savings before committing to V2 rewriter.
-pub fn peepholeReport(
-    allocator: std.mem.Allocator,
-    elf_bytes: []const u8,
-) LinkError!peephole.Report {
-    const elf_file = ElfFile.parse(elf_bytes) catch return LinkError.InvalidElf;
-    var bpr = byteparser.byteParse(allocator, &elf_file) catch |e| switch (e) {
-        error.OutOfMemory => return LinkError.OutOfMemory,
-        else => return LinkError.InvalidElf,
-    };
-    defer bpr.deinit();
-    var ast_val = AST.fromByteParse(allocator, &bpr) catch |e| switch (e) {
-        error.OutOfMemory => return LinkError.OutOfMemory,
-    };
-    defer ast_val.deinit();
-    return peephole.scan(allocator, ast_val.nodes.items) catch
-        return LinkError.OutOfMemory;
-}
-
-/// Same as `linkProgram`, but runs the D.7.10 V2 peephole pass before
-/// `buildProgram`. Rewrites `bpfel -O2`'s byte-wise `load i64 align 1`
-/// expansion (8 × ldxb + shift/or chain) into a single `ldxdw`.
-///
-/// Opt-in: output is **no longer byte-identical to reference-shim**
-/// for programs that contain the pattern. Safe for CU-critical use
-/// cases; the 19 default goldens' inputs don't match the pattern so
-/// this flag is a no-op on them.
-pub fn linkProgramOptimized(
-    allocator: std.mem.Allocator,
-    elf_bytes: []const u8,
-) LinkError![]u8 {
-    return linkProgramArchOpts(allocator, elf_bytes, .V0, .{ .peephole = true });
-}
-
-pub const LinkOptions = struct { peephole: bool = false };
-
 fn linkProgramArch(
     allocator: std.mem.Allocator,
     elf_bytes: []const u8,
     arch: SbpfArch,
 ) LinkError![]u8 {
-    return linkProgramArchOpts(allocator, elf_bytes, arch, .{});
-}
-
-fn linkProgramArchOpts(
-    allocator: std.mem.Allocator,
-    elf_bytes: []const u8,
-    arch: SbpfArch,
-    opts: LinkOptions,
-) LinkError![]u8 {
     const elf_file = ElfFile.parse(elf_bytes) catch return LinkError.InvalidElf;
 
     var bpr = byteparser.byteParse(allocator, &elf_file) catch |e| switch (e) {
@@ -244,15 +191,6 @@ fn linkProgramArchOpts(
     var ast_val = AST.fromByteParse(allocator, &bpr) catch |e| switch (e) {
         error.OutOfMemory => return LinkError.OutOfMemory,
     };
-
-    if (opts.peephole) {
-        _ = peephole.rewriteAll(allocator, &ast_val) catch |e| switch (e) {
-            error.OutOfMemory => return LinkError.OutOfMemory,
-        };
-        _ = peephole.rewriteStores(allocator, &ast_val) catch |e| switch (e) {
-            error.OutOfMemory => return LinkError.OutOfMemory,
-        };
-    }
 
     // Convert ByteParseResult.debug (DebugScan) → []ast.DebugSection.
     // The slice is owned by ParseResult after buildProgram consumes it.

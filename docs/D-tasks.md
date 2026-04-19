@@ -253,18 +253,48 @@ CFG / 类型 / alias 信息）。我们在 **字节码层**做优化（看得见
 | **D.7.7** | Syscall 批量优化 | AST | log 密集 5-10% CU | 高 | 相邻 `sol_log_` 合并成一次；相邻 `sol_log_64_` 参数打包 |
 | **D.7.8** | Section 布局优化（hot-first）| emit | 微小（VM cache 局部性）| 低 | entry 附近的 `.text` 靠前；冷路径靠后 |
 | **D.7.9** | `.text` jump relaxation | emit | 0-1% 体积 | 高 | 长跳转（`call`）如果目标在短范围内换成短形式；跟当前 SBPF encoding 是否允许相关 |
-| **D.7.10** | Unaligned u64 load coalescing | AST | stock-zig pipeline ~12× CU（pubkey 187→~19）| 高 | 把 `bpfel -O2` 对 `load i64 align 1` 展开的 8×ldxb + shift/or 链重写成单条 `ldxdw`。详见下方 D.7.10 专节 |
+| ~~**D.7.10**~~ | ~~Unaligned u64 load coalescing~~ | ~~AST~~ | 取消 | N/A | **已完全回退**（2026-04-19）；细节见下方专节 |
 
-### D.7.10 —— Unaligned u64 load coalescing（专节）
+### D.7.10 —— 完全回退（2026-04-19）
 
-**触发场景**：用户走 `stock-zig → zig cc -target bpfel → elf2sbpf` 管
-道。Solana LLVM fork 允许非对齐 64-bit load；stock LLVM 保守把它们
-拆成 8 次 u8 load + shift/or 链（每 u64 load 耗 22 条指令，对比
-solana-zig 的 1 条 `ldxdw`）。solana-program-rosetta 实测：Pubkey
-compare 15 CU（solana-zig）vs 187 CU（stock-zig+elf2sbpf），12.5×
-gap 基本都来自这里。
+**结论**：V1 detector + V2.0/V2.1/V2.2 rewriter 全部删除，源码、
+公开 API、CLI flag、测试 fixture 一并清除。elf2sbpf 回归 "stock Zig
+→ .so" 的纯粹工具定位；CU 优化路径改由 solana-zig fork 承担。
 
-**V1 detector（已完成，2026-04-18）**：
+**为什么回退**：V2 rewriter 在 zignocchio escrow 上触发 miscompile
+（`Access violation at 0xfffffffffffffe98`，3 个 integration test
+全挂）。根因是 taint-matching 对 stack-heavy 控制流 + 非标准 shift
+chain 覆盖不全。修复路径不 trivial（要加 register liveness 分析
++ 跨-BB taint），且 fork Zig 已经能直接从 LLVM codegen 层拿到
+baseline CU，elf2sbpf peephole 的产品意义不再。
+
+**删除的东西**：
+- `src/ast/peephole.zig`（整个文件）
+- `lib.zig` 里 `peephole` re-export + `peepholeReport()` + `linkProgramOptimized()` + `LinkOptions`
+- `main.zig` 里 `--peephole` + `--peephole-report` CLI flag + `.report` ParsedArgs variant
+- `src/testdata/rosetta-{transfer,pubkey}.stock-zig.o` fixture
+- `integration_test.zig` 里 V1 detector + V2 rewriter 测试（3 条）
+- 附带删除 20 个 peephole 单元测试（peephole.zig 内）
+
+**原来的历史**（供考古）：
+- V1 detector: `8e44256`
+- V2.0 rewriter (非交织): `e43112a`
+- V2.1 super-cluster: `f0a7211`
+- V2.1a unify taint path: `dcfd316`
+- V2.2 store peephole: `113788a`
+
+**现在的 CU 路径**：
+- 想要最优 CU → 用 [solana-zig fork][fork]，一步出 `.so`，跟 v1.52.0 baseline 字节对等
+- 想要零依赖 → 用 elf2sbpf 默认路径，跟 `reference-shim` 字节对等，CU 比 fork 稍差
+
+[fork]: https://github.com/DaviRain-Su/solana-zig-bootstrap/tree/solana-1.52-zig0.16
+
+### D.7.10 —— 历史记录（已回退）
+
+以下内容是 2026-04-18 尝试 V1/V2 时记录的技术细节，保留作研究参考。
+**这些代码已不在仓库中**。
+
+**V1 detector（尝试并删除）**：
 - `src/ast/peephole.zig` + `linkProgram` 侧 `peepholeReport()` API
 - CLI `elf2sbpf --peephole-report <input.o>` 列出候选 cluster
 - 实测结果：
@@ -396,7 +426,7 @@ gap 基本都来自这里。
 | D.4 Zig 库 API | ✅ 完成，v0.3.0 已发 |
 | D.5 Windows | 未开始（等用户报需求） |
 | D.6 跨语言前端 | 战略愿景，不排期 |
-| **D.7 字节码层优化** | 路线图就位，D.7.10 V1-V2.2 已全部落（V1 detector / V2.0 非交织 / V2.1 super-cluster / V2.1a miscompile 修复 / V2.2 store peephole）；V2.3 small-int loads / V2.4 memcpy recognition 未排期 |
+| **D.7 字节码层优化** | 路线图保留；**D.7.10 V1-V2.2 全部 2026-04-19 回退**（zignocchio escrow miscompile）；CU 优化改由 solana-zig fork 承担 |
 
 ---
 
